@@ -443,6 +443,165 @@ kept for symmetry with the compile pipeline."
           (should-not (file-exists-p meta)))
       (delete-directory latex-to-svg-cache-directory t))))
 
+;;;; Preamble precompilation (.fmt)
+
+(ert-deftest latex-to-svg-format-key-folds-in-preamble ()
+  ;; The format key names the `.fmt'; it must change when the preamble (base
+  ;; or appended) or the LaTeX program changes, so a stale format is never
+  ;; reused after a preamble edit.
+  (let ((base (latex-to-svg--format-key)))
+    (should (equal base (latex-to-svg--format-key)))
+    (let ((latex-to-svg-appended-preamble "\\usepackage{physics}"))
+      (should-not (equal base (latex-to-svg--format-key))))
+    (let ((latex-to-svg-preamble "\\documentclass{minimal}"))
+      (should-not (equal base (latex-to-svg--format-key))))
+    (let ((latex-to-svg-latex-program "xelatex"))
+      (should-not (equal base (latex-to-svg--format-key))))))
+
+(ert-deftest latex-to-svg-preamble-appends ()
+  ;; The combined preamble is the base alone when nothing is appended, else
+  ;; base + newline + appended (the exact text dumped and embedded).
+  (let ((latex-to-svg-preamble "BASE")
+        (latex-to-svg-appended-preamble ""))
+    (should (equal (latex-to-svg--preamble) "BASE")))
+  (let ((latex-to-svg-preamble "BASE")
+        (latex-to-svg-appended-preamble "EXTRA"))
+    (should (equal (latex-to-svg--preamble) "BASE\nEXTRA"))))
+
+(ert-deftest latex-to-svg-ensure-format-nil-when-disabled ()
+  ;; With precompilation off, no format is produced or consulted (never even
+  ;; probes for mylatexformat).
+  (let ((latex-to-svg-precompile nil))
+    (cl-letf (((symbol-function 'latex-to-svg--precompile-available-p)
+               (lambda () (error "must not probe when disabled"))))
+      (should-not (latex-to-svg--ensure-format)))))
+
+(ert-deftest latex-to-svg-ensure-format-builds-once-and-reuses ()
+  ;; First call builds the `.fmt' (stubbed); a fresh on-disk format newer than
+  ;; the LaTeX binary is then reused with no rebuild.
+  (let ((latex-to-svg-cache-directory (make-temp-file "l2s-fmt" t))
+        (latex-to-svg-precompile t)
+        (latex-to-svg--format-checked (make-hash-table :test 'equal))
+        (latex-to-svg--format-blocklist (make-hash-table :test 'equal))
+        (builds 0))
+    (unwind-protect
+        (cl-letf (((symbol-function 'latex-to-svg--latex-binary)
+                   ;; A binary older than the about-to-be-built .fmt.
+                   (lambda () (let ((f (make-temp-file "l2s-bin")))
+                                (set-file-times f '(1 0)) f)))
+                  ((symbol-function 'latex-to-svg--precompile-available-p)
+                   (lambda () t))
+                  ((symbol-function 'latex-to-svg--build-format)
+                   (lambda (fkey)
+                     (cl-incf builds)
+                     (let ((f (latex-to-svg--format-file fkey)))
+                       (with-temp-file f (insert "fmt")) f))))
+          (let ((f1 (latex-to-svg--ensure-format)))
+            (should f1)
+            (should (file-exists-p f1))
+            (should (= builds 1))
+            ;; Second call: verified fresh, served from disk, no rebuild.
+            (should (equal f1 (latex-to-svg--ensure-format)))
+            (should (= builds 1))))
+      (delete-directory latex-to-svg-cache-directory t))))
+
+(ert-deftest latex-to-svg-ensure-format-rebuilds-when-stale ()
+  ;; A `.fmt' older than the LaTeX binary (e.g. after a toolchain upgrade) is
+  ;; deleted and rebuilt rather than reused.
+  (let ((latex-to-svg-cache-directory (make-temp-file "l2s-fmt-stale" t))
+        (latex-to-svg-precompile t)
+        (latex-to-svg--format-checked (make-hash-table :test 'equal))
+        (latex-to-svg--format-blocklist (make-hash-table :test 'equal))
+        (builds 0))
+    (unwind-protect
+        (let* ((fkey (latex-to-svg--format-key))
+               (fmt (latex-to-svg--format-file fkey))
+               (newer-bin (make-temp-file "l2s-bin")))
+          ;; Stale .fmt on disk (epoch), binary is current.
+          (with-temp-file fmt (insert "old"))
+          (set-file-times fmt '(1 0))
+          (cl-letf (((symbol-function 'latex-to-svg--latex-binary)
+                     (lambda () newer-bin))
+                    ((symbol-function 'latex-to-svg--precompile-available-p)
+                     (lambda () t))
+                    ((symbol-function 'latex-to-svg--build-format)
+                     (lambda (k)
+                       (cl-incf builds)
+                       (let ((f (latex-to-svg--format-file k)))
+                         (with-temp-file f (insert "new")) f))))
+            (should (latex-to-svg--ensure-format))
+            (should (= builds 1))
+            (should (equal (with-temp-buffer (insert-file-contents fmt)
+                                             (buffer-string))
+                           "new"))))
+      (delete-directory latex-to-svg-cache-directory t))))
+
+(ert-deftest latex-to-svg-block-format-blocklists-and-deletes ()
+  ;; Abandoning a format deletes the `.fmt', records its key, and makes
+  ;; `--ensure-format' skip precompilation for that preamble thereafter.
+  (let ((latex-to-svg-cache-directory (make-temp-file "l2s-fmt-block" t))
+        (latex-to-svg-precompile t)
+        (latex-to-svg--format-checked (make-hash-table :test 'equal))
+        (latex-to-svg--format-blocklist (make-hash-table :test 'equal)))
+    (unwind-protect
+        (let* ((fkey (latex-to-svg--format-key))
+               (fmt (latex-to-svg--format-file fkey)))
+          (with-temp-file fmt (insert "fmt"))
+          (cl-letf (((symbol-function 'display-warning) #'ignore))
+            (latex-to-svg--block-format fmt))
+          (should-not (file-exists-p fmt))
+          (should (gethash fkey latex-to-svg--format-blocklist))
+          ;; Blocklisted => ensure-format yields nil without rebuilding.
+          (cl-letf (((symbol-function 'latex-to-svg--build-format)
+                     (lambda (_k) (error "must not rebuild a blocklisted format"))))
+            (should-not (latex-to-svg--ensure-format))))
+      (delete-directory latex-to-svg-cache-directory t))))
+
+(ert-deftest latex-to-svg-flush-format-clears-everything ()
+  ;; `latex-to-svg-flush-format' deletes every `.fmt' and resets session state.
+  (let ((latex-to-svg-cache-directory (make-temp-file "l2s-fmt-flush" t))
+        (latex-to-svg--format-checked (make-hash-table :test 'equal))
+        (latex-to-svg--format-blocklist (make-hash-table :test 'equal)))
+    (unwind-protect
+        (let ((dir latex-to-svg-cache-directory))
+          (with-temp-file (expand-file-name "aaa.fmt" dir) (insert "1"))
+          (with-temp-file (expand-file-name "bbb.fmt" dir) (insert "2"))
+          ;; A sibling SVG must survive the flush.
+          (with-temp-file (expand-file-name "ccc.svg" dir) (insert "<svg/>"))
+          (puthash "aaa" t latex-to-svg--format-checked)
+          (puthash "bbb" t latex-to-svg--format-blocklist)
+          (latex-to-svg-flush-format)
+          (should-not (directory-files dir nil "\\.fmt\\'"))
+          (should (file-exists-p (expand-file-name "ccc.svg" dir)))
+          (should (= 0 (hash-table-count latex-to-svg--format-checked)))
+          (should (= 0 (hash-table-count latex-to-svg--format-blocklist))))
+      (delete-directory latex-to-svg-cache-directory t))))
+
+(ert-deftest latex-to-svg-precompiled-compile-end-to-end ()
+  ;; End to end (needs latex + dvisvgm + mylatexformat): a real compile through
+  ;; the precompiled preamble produces the SVG, and the `.fmt' is left cached.
+  (skip-unless (and (latex-to-svg-tools-available-p)
+                    (let ((latex-to-svg-precompile t))
+                      (latex-to-svg--precompile-available-p))))
+  (let ((latex-to-svg-cache-directory (make-temp-file "l2s-fmt-e2e" t))
+        (latex-to-svg-precompile t)
+        (latex-to-svg--format-checked (make-hash-table :test 'equal))
+        (latex-to-svg--format-blocklist (make-hash-table :test 'equal)))
+    (unwind-protect
+        (cl-letf (((symbol-function 'latex-to-svg-available-p) (lambda () t)))
+          (let ((done 'pending)
+                (doc "\\begin{equation}\ne^{i\\pi}+1=0\n\\end{equation}"))
+            (latex-to-svg doc :callback (lambda () (setq done t)))
+            (dotimes (_ 200)
+              (when (eq done 'pending) (accept-process-output nil 0.1)))
+            (should (eq done t))
+            (should (file-exists-p
+                     (latex-to-svg--svg-file (latex-to-svg--cache-key doc))))
+            ;; The format file was built and cached alongside the SVG.
+            (should (file-exists-p
+                     (latex-to-svg--format-file (latex-to-svg--format-key))))))
+      (delete-directory latex-to-svg-cache-directory t))))
+
 (provide 'latex-to-svg-tests)
 
 ;;; latex-to-svg-tests.el ends here

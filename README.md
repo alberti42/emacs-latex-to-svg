@@ -69,6 +69,9 @@ rendering in buffers that are not TeX documents, this library is.
 - `latex` and `dvisvgm` on `exec-path` (from any TeX distribution). Without
   them, a placeholder panel boxing the raw LaTeX is shown instead (or set
   `latex-to-svg-use-placeholder`).
+- Optionally the `mylatexformat` package (`mylatexformat.ltx`, bundled with
+  most TeX distributions) for preamble precompilation. Absent, the engine
+  simply skips the speedup — see [Preamble precompilation](#preamble-precompilation-fmt).
 
 ## Installation
 
@@ -193,7 +196,28 @@ emitted line short — TeX wraps log lines near column 80.
 `-appended-preamble`, `-cache-directory` (default `$XDG_CACHE_HOME/latex-to-svg/`),
 `-font-scale`, `-use-placeholder`, `-render-on-non-graphic`, `-svg-dpi`
 (points→pixels conversion for sizing; default 96, rarely needs changing),
-`-metadata-prefix` (nil = off; enable the `.eld` compile-metadata capture above).
+`-metadata-prefix` (nil = off; enable the `.eld` compile-metadata capture above),
+`-precompile` (default `t`; preamble precompilation, below).
+
+### Preamble precompilation (`.fmt`)
+
+Every equation is its own tiny LaTeX document, so each compile re-reads the
+class and every package in the preamble (`amsmath`, `xcolor`, and whatever you
+add via `latex-to-svg-appended-preamble`). That parsing dominates the runtime
+of a small equation. With `latex-to-svg-precompile` (default `t`) the engine
+dumps the preamble **once** to a LaTeX format file (`.fmt`) using the
+[`mylatexformat`](https://ctan.org/pkg/mylatexformat) package, keyed by the
+preamble text, and every equation compile then loads it via a `%&` first line
+instead of re-parsing the packages — typically **25–40% faster per equation**,
+more with a heavier preamble.
+
+It is a pure optimization with a graceful fallback: when `mylatexformat.ltx`
+isn't on the TeX search path, or the dump fails, or a compile that used the
+format later fails, the engine transparently reverts to embedding the full
+preamble. A stale format after a TeX toolchain upgrade is detected (the LaTeX
+binary is newer than the `.fmt`) and rebuilt automatically;
+`M-x latex-to-svg-flush-format` is the manual escape hatch. Set
+`latex-to-svg-precompile` to `nil` to disable it entirely.
 
 Preview size is derived deterministically from the buffer font height and
 `-svg-dpi` (SVG `pt` = dpi/72 px). Earlier versions measured this per-frame with

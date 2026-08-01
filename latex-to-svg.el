@@ -5,7 +5,7 @@
 ;; Author: Andrea Alberti <a.alberti82@gmail.com>
 ;; Maintainer: Andrea Alberti <a.alberti82@gmail.com>
 ;; URL: https://github.com/alberti42/emacs-latex-to-svg
-;; Version: 0.3.1
+;; Version: 0.4.0
 ;; Package-Requires: ((emacs "29.1"))
 ;; Keywords: tex, math, images
 
@@ -48,6 +48,13 @@
 ;;     `--scale=1' (natural point dimensions, glyphs as outline paths) and
 ;;     scaled at display time via `create-image' :scale, computed from the
 ;;     buffer font height so equations track the font — again no recompile.
+;;
+;;   * The preamble is PRECOMPILED once to a LaTeX format file (`.fmt') via
+;;     the `mylatexformat' package, then loaded by every equation compile
+;;     with a `%&' first line (see `latex-to-svg-precompile').  This skips
+;;     re-parsing the class and packages (amsmath, ...) on each equation, so
+;;     compiles are markedly faster.  It falls back to a full compile when
+;;     `mylatexformat' is unavailable or the dump fails.
 ;;
 ;; Public entry point:
 ;;
@@ -123,6 +130,26 @@ Use this to load additional packages (e.g. `\\usepackage{braket}',
 value is folded into the cache key, so changing it automatically
 invalidates cached SVGs."
   :type 'string
+  :group 'latex-to-svg)
+
+(defcustom latex-to-svg-precompile t
+  "When non-nil, precompile the preamble to a LaTeX format (`.fmt') file.
+
+The class and packages in `latex-to-svg-preamble' /
+`latex-to-svg-appended-preamble' are dumped once, with the
+`mylatexformat' package, to a format file keyed by the preamble text;
+every equation compile then loads it with a `%&' first line instead of
+re-reading the preamble, which speeds each compile up noticeably.
+
+Requires `mylatexformat.ltx' on the TeX search path (part of most TeX
+distributions).  When it is missing, or the dump fails, or a compile
+using the format later fails, the engine transparently falls back to
+embedding the full preamble in each equation — correctness never depends
+on this option.  A stale format after a TeX toolchain upgrade is detected
+and rebuilt automatically (the binary is newer than the `.fmt');
+`latex-to-svg-flush-format' is the manual escape hatch."
+  :type 'boolean
+  :safe #'booleanp
   :group 'latex-to-svg)
 
 (defcustom latex-to-svg-cache-directory nil
@@ -226,6 +253,19 @@ the same undisplayed SVG), which made preview sizing non-deterministic."
 (defvar latex-to-svg--pending (make-hash-table :test 'equal)
   "In-memory map of cache key to callbacks awaiting an in-flight compile.")
 
+;; Precompiled-preamble (.fmt) bookkeeping, keyed by format key (a hash of
+;; the preamble text + LaTeX program, see `latex-to-svg--format-key').
+;; `--format-checked' records keys whose `.fmt' was verified fresh this
+;; session, so the freshness (mtime) check runs at most once per key;
+;; `--format-blocklist' records keys whose format produced a compile
+;; failure, so precompilation is abandoned for them for the rest of the
+;; session and the engine falls back to full compiles.
+(defvar latex-to-svg--format-checked (make-hash-table :test 'equal)
+  "Format keys whose `.fmt' has been verified fresh this session.")
+
+(defvar latex-to-svg--format-blocklist (make-hash-table :test 'equal)
+  "Format keys whose `.fmt' failed a compile; precompilation skipped for them.")
+
 ;;;; Colors and appearance
 
 (defun latex-to-svg--svg-color (face attribute fallback)
@@ -297,6 +337,14 @@ Honours `latex-to-svg-cache-directory', else `$XDG_CACHE_HOME'
     (unless (file-directory-p dir)
       (make-directory dir t))
     dir))
+
+(defun latex-to-svg--preamble ()
+  "Return the full LaTeX preamble: the base plus any appended packages.
+This is the exact text embedded before `\\begin{document}' in a full
+compile, and the text dumped into the precompiled format file."
+  (if (string-empty-p latex-to-svg-appended-preamble)
+      latex-to-svg-preamble
+    (concat latex-to-svg-preamble "\n" latex-to-svg-appended-preamble)))
 
 (defun latex-to-svg--cache-key (latex)
   "Return a stable content cache key for LATEX.
@@ -485,6 +533,127 @@ already stripped, e.g. \"E=mc^2\"."
        lines)
       (svg-image svg :scale 1.0 :ascent 'center))))
 
+;;;; Preamble precompilation (.fmt)
+
+;; Speedup: dump the preamble (class + packages) to a LaTeX format file once,
+;; then load it from every equation compile with a `%&' first line instead of
+;; re-reading and re-loading amsmath/xcolor/... each time.  Uses the
+;; `mylatexformat' package.  Entirely optional: on any hiccup the engine
+;; falls back to embedding the full preamble in each equation, so a `.fmt' is
+;; a pure performance optimization, never a correctness dependency.
+
+(defun latex-to-svg--latex-binary ()
+  "Return the path to the LaTeX executable, or nil.
+Honours an absolute `latex-to-svg-latex-program', else resolves the
+command name on `exec-path'.  Used for the format freshness check."
+  (let ((prog (car (split-string latex-to-svg-latex-program))))
+    (if (file-name-absolute-p prog)
+        (and (file-executable-p prog) prog)
+      (executable-find prog))))
+
+(defun latex-to-svg--latex-format-name ()
+  "Return the base LaTeX format to preload when dumping (e.g. \"latex\").
+The `&NAME' the `-ini' dump reads before `mylatexformat.ltx'."
+  (file-name-nondirectory (car (split-string latex-to-svg-latex-program))))
+
+(defun latex-to-svg--format-key ()
+  "Return the cache key naming the precompiled preamble format file.
+Folds in the full preamble and the LaTeX program, so any change to
+either yields a distinct `.fmt' (and a rebuild on the next render)."
+  (secure-hash 'sha1 (format "%s\0%s"
+                             (latex-to-svg--preamble)
+                             latex-to-svg-latex-program)))
+
+(defun latex-to-svg--format-file (fkey)
+  "Return the precompiled format file path (`.fmt') for FKEY."
+  (expand-file-name (concat fkey ".fmt") (latex-to-svg--cache-dir)))
+
+(defun latex-to-svg--precompile-available-p ()
+  "Return non-nil when the preamble can be dumped to a `.fmt'.
+Requires the `mylatexformat' package: `mylatexformat.ltx' must be
+findable via `kpsewhich'."
+  (and (executable-find "kpsewhich")
+       (eql 0 (ignore-errors
+                (call-process "kpsewhich" nil nil nil "mylatexformat.ltx")))))
+
+(defun latex-to-svg--build-format (fkey)
+  "Dump the preamble to a precompiled format file for FKEY, synchronously.
+Return the `.fmt' path on success, nil on failure.  Writes the preamble
+followed by `\\endofdump' to a scratch `.tex' in the cache directory and
+runs `latex-to-svg-latex-program' in `-ini' mode with `mylatexformat.ltx'
+to dump `<cache>/FKEY.fmt'.  The build log is left in the
+`*latex-to-svg-precompile*' buffer for inspection."
+  (let* ((dir (latex-to-svg--cache-dir))
+         (base (expand-file-name fkey dir))
+         (fmt (concat base ".fmt"))
+         (pre-tex (concat base ".tex"))
+         (log (concat base ".log"))
+         (buffer (get-buffer-create "*latex-to-svg-precompile*")))
+    (with-current-buffer buffer (erase-buffer))
+    (with-temp-file pre-tex
+      (insert (latex-to-svg--preamble) "\n\\endofdump\n"))
+    (message "latex-to-svg: precompiling LaTeX preamble...")
+    (let ((rv (ignore-errors
+                (call-process latex-to-svg-latex-program nil buffer nil
+                              (concat "-output-directory=" dir)
+                              "-ini"
+                              (concat "-jobname=" fkey)
+                              (concat "&" (latex-to-svg--latex-format-name))
+                              "mylatexformat.ltx" pre-tex))))
+      (ignore-errors (delete-file pre-tex))
+      (if (and (eql rv 0) (file-exists-p fmt))
+          (progn (ignore-errors (delete-file log)) fmt)
+        (ignore-errors (delete-file fmt))
+        nil))))
+
+(defun latex-to-svg--ensure-format ()
+  "Return a fresh precompiled preamble format file path, or nil.
+Builds the `.fmt' on first use (synchronously, once per session per
+preamble) and caches it on disk.  Rebuilds it when the LaTeX binary is
+newer than the `.fmt' (e.g. after a TeX toolchain upgrade, which would
+otherwise fail every compile with a format-version mismatch).  Returns
+nil — so the caller uses a full compile — when precompilation is off,
+`mylatexformat' is unavailable, the dump fails, or the format has been
+blocklisted after an earlier failure."
+  (when latex-to-svg-precompile
+    (let ((fkey (latex-to-svg--format-key)))
+      (unless (gethash fkey latex-to-svg--format-blocklist)
+        (let ((fmt (latex-to-svg--format-file fkey))
+              (latex-bin (latex-to-svg--latex-binary)))
+          (cond
+           ;; Verified fresh already this session.
+           ((and (gethash fkey latex-to-svg--format-checked)
+                 (file-exists-p fmt))
+            fmt)
+           ;; On disk and newer than the engine binary -> trust it.
+           ((and (file-exists-p fmt)
+                 (or (null latex-bin)
+                     (file-newer-than-file-p fmt latex-bin)))
+            (puthash fkey t latex-to-svg--format-checked)
+            fmt)
+           ;; Missing or stale -> (re)build, if mylatexformat is available.
+           ((latex-to-svg--precompile-available-p)
+            (when (file-exists-p fmt) (ignore-errors (delete-file fmt)))
+            (when-let* ((built (latex-to-svg--build-format fkey)))
+              (puthash fkey t latex-to-svg--format-checked)
+              built))))))))
+
+(defun latex-to-svg--block-format (format-file)
+  "Abandon FORMAT-FILE after a compile that used it failed.
+Deletes the `.fmt' and blocklists its key so precompilation is skipped
+for this preamble for the rest of the session (the engine falls back to
+full compiles).  Warns once.  Called only when the same equation is
+about to be retried with the full inline preamble, so a genuinely broken
+equation is not mistaken for a broken format."
+  (let ((fkey (file-name-base format-file)))
+    (puthash fkey t latex-to-svg--format-blocklist)
+    (remhash fkey latex-to-svg--format-checked)
+    (ignore-errors (delete-file format-file))
+    (display-warning
+     'latex-to-svg
+     "Precompiled LaTeX preamble failed; falling back to full compiles."
+     :warning)))
+
 ;;;; Async compile
 
 (defun latex-to-svg--compile-failed (key latex dir)
@@ -542,7 +711,7 @@ Called on a successful compile, before DIR is cleaned up."
           (with-temp-file (latex-to-svg--meta-file key)
             (prin1 (list :v 1 :nums (cons initial final)) (current-buffer))))))))
 
-(defun latex-to-svg--compile (key latex &optional metadata)
+(defun latex-to-svg--compile (key latex &optional metadata no-format)
   "Asynchronously compile LATEX to the color-independent cache SVG for KEY.
 METADATA, when non-nil, is stored as the INITIAL value in KEY's `.eld'
 sidecar alongside the FINAL captured from the log (see
@@ -553,10 +722,18 @@ valid body LaTeX and chooses inline vs display via delimiters).
 Writes a standalone LaTeX document, runs `latex-to-svg-latex-program'
 then `latex-to-svg-dvisvgm-program' in a scratch directory, and on
 success caches the SVG and notifies every callback queued for KEY
-\(see `latex-to-svg--enqueue').  On failure the log is saved and a
-warning emitted (see `latex-to-svg--compile-failed'); queued
-callbacks are not run.  The scratch directory is removed when the
-process exits.
+\(see `latex-to-svg--enqueue').  The scratch directory is removed when
+the process exits.
+
+The preamble is loaded from a precompiled format file (`.fmt') when one
+is available (see `latex-to-svg-precompile'), via a `%&' first line;
+otherwise the full preamble is embedded in the document.  On failure,
+if a format was used it may be the culprit: the format is abandoned (see
+`latex-to-svg--block-format') and the same equation is retried once with
+the full inline preamble.  Only when a full-preamble compile fails is
+the log saved and a warning emitted (see `latex-to-svg--compile-failed')
+and queued callbacks dropped.  NO-FORMAT forces that inline path (it is
+set on the retry).
 
 No color is baked in: the equation's default ink is emitted as the
 literal `currentColor' (dvisvgm `--currentcolor'), so the SVG is
@@ -567,20 +744,27 @@ re-tints from cache without recompiling."
          (tex (expand-file-name "equation.tex" dir))
          (dvi (expand-file-name "equation.dvi" dir))
          (svg (latex-to-svg--svg-file key))
+         (format-file (and (not no-format) (latex-to-svg--ensure-format)))
          (cleanup (lambda () (ignore-errors (delete-directory dir t)))))
     (with-temp-file tex
-      (insert latex-to-svg-preamble "\n"
-              (if (string-empty-p latex-to-svg-appended-preamble)
-                  ""
-                (concat latex-to-svg-appended-preamble "\n"))
-              "\\begin{document}\n"
-              ;; LATEX is inserted verbatim: it already carries its own math
-              ;; delimiters / environment (chosen by the front-end), which
-              ;; also decide inline vs display sizing.  No `\color' —
-              ;; `--currentcolor' below turns the default (black) ink into
-              ;; the `currentColor' token, tinted at display.
-              latex "\n"
-              "\\end{document}\n"))
+      (if format-file
+          ;; Load the precompiled preamble: the `%&' line must be first, and
+          ;; names the format file by absolute path without its `.fmt'
+          ;; extension.  The class + packages are already in the format, so
+          ;; only the document body is compiled here.
+          (insert "%& " (file-name-sans-extension format-file) "\n"
+                  "\\begin{document}\n"
+                  latex "\n"
+                  "\\end{document}\n")
+        (insert (latex-to-svg--preamble) "\n"
+                "\\begin{document}\n"
+                ;; LATEX is inserted verbatim: it already carries its own math
+                ;; delimiters / environment (chosen by the front-end), which
+                ;; also decide inline vs display sizing.  No `\color' —
+                ;; `--currentcolor' below turns the default (black) ink into
+                ;; the `currentColor' token, tinted at display.
+                latex "\n"
+                "\\end{document}\n")))
     ;; Compile at dvisvgm scale 1: the SVG is vector (glyphs are outline
     ;; paths via --no-fonts), so the scale doesn't affect quality, and the
     ;; displayed size is set later by `latex-to-svg-display-scale'.  Fixing
@@ -600,20 +784,33 @@ re-tints from cache without recompiling."
            (start-process-shell-command "latex-to-svg" nil command)
            (lambda (process _event)
              (when (memq (process-status process) '(exit signal))
-               (if (and (eq (process-status process) 'exit)
-                        (zerop (process-exit-status process))
-                        (file-exists-p svg))
-                   (progn
-                     ;; Capture compile metadata before DIR is cleaned up.
-                     (latex-to-svg--write-metadata key dir metadata)
-                     (dolist (cb (gethash key latex-to-svg--pending))
-                       (condition-case cb-err
-                           (funcall cb)
-                         (error
-                          (message "latex-to-svg: callback error: %S" cb-err)))))
-                 (latex-to-svg--compile-failed key latex dir))
-               (remhash key latex-to-svg--pending)
-               (funcall cleanup))))
+               (cond
+                ;; Success.
+                ((and (eq (process-status process) 'exit)
+                      (zerop (process-exit-status process))
+                      (file-exists-p svg))
+                 ;; Capture compile metadata before DIR is cleaned up.
+                 (latex-to-svg--write-metadata key dir metadata)
+                 (dolist (cb (gethash key latex-to-svg--pending))
+                   (condition-case cb-err
+                       (funcall cb)
+                     (error
+                      (message "latex-to-svg: callback error: %S" cb-err))))
+                 (remhash key latex-to-svg--pending)
+                 (funcall cleanup))
+                ;; Failure while using a precompiled format: the format may
+                ;; be at fault (e.g. a package that misbehaves when dumped).
+                ;; Abandon it and retry this equation once with the full
+                ;; inline preamble — the retry keeps the same pending queue.
+                (format-file
+                 (funcall cleanup)
+                 (latex-to-svg--block-format format-file)
+                 (latex-to-svg--compile key latex metadata t))
+                ;; Genuine failure (full preamble): report and drop the queue.
+                (t
+                 (latex-to-svg--compile-failed key latex dir)
+                 (remhash key latex-to-svg--pending)
+                 (funcall cleanup))))))
         (error
          ;; Couldn't even spawn the process — drop the queue and clean up.
          (remhash key latex-to-svg--pending)
@@ -713,6 +910,23 @@ flow."
              latex-to-svg--image-cache)
     (dolist (k stale)
       (remhash k latex-to-svg--image-cache))))
+
+;;;###autoload
+(defun latex-to-svg-flush-format ()
+  "Delete all precompiled preamble format files and forget them.
+
+Removes every `.fmt' in the cache directory and clears this session's
+freshness and blocklist tracking, so the next render dumps a fresh
+format from the current preamble.  An escape hatch for a stale format
+the automatic freshness check missed — normally a TeX toolchain upgrade
+is handled on its own (the binary is newer than the `.fmt'), so this is
+rarely needed."
+  (interactive)
+  (clrhash latex-to-svg--format-checked)
+  (clrhash latex-to-svg--format-blocklist)
+  (let ((dir (latex-to-svg--cache-dir)))
+    (dolist (f (directory-files dir t "\\.fmt\\'"))
+      (ignore-errors (delete-file f)))))
 
 ;;;###autoload
 (defun latex-to-svg-metadata (latex)
