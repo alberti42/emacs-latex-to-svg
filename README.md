@@ -76,12 +76,14 @@ Note the recipe *name* stays `latex-to-svg` (the feature you `require`), while
 ## API
 
 ```elisp
-(latex-to-svg LATEX &key callback)
+(latex-to-svg LATEX &key callback metadata rescale-by)
 ```
 
 `LATEX` is placed **verbatim** in the LaTeX document body, so pass valid body LaTeX — math with its delimiters (`$x$`, `\(x\)`, `\[x\]`) or a full environment (`\begin{equation}…\end{equation}`). The delimiters also decide inline vs display sizing; the engine is deliberately unaware of that distinction (a front-end that has bare bodies wraps them itself). Equation numbering, if a front-end wants it, is just a `\setcounter{equation}{N}` prepended to the body — it folds into the content hash for free.
 
 Returns an image now when one can be produced synchronously (cache / on-disk SVG / placeholder), else `nil` after scheduling an asynchronous compile; `CALLBACK` (a zero-argument function) is invoked once the SVG is ready, so the caller can re-query (`latex-to-svg` again → now returns the image) and place it. Concurrent requests for the same equation are coalesced onto a single compile.
+
+`RESCALE-BY` (default `1.0`) multiplies the display size of this one call on top of `latex-to-svg-font-scale`. The engine has no inline/display awareness, so a front-end that wants display equations a touch larger than inline passes, say, `:rescale-by 1.1` for display and nothing for inline. It is a display-time scale only — same on-disk SVG, no recompile — and folds into the in-memory image cache key, so both sizes coexist. `METADATA` is documented under [Compile metadata](#compile-metadata-eld-sidecar) below.
 
 The image is tinted to the current buffer foreground and scaled to the buffer font at build time, so call it within the target buffer.
 
