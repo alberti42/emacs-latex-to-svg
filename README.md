@@ -34,14 +34,18 @@ Several other Emacs packages preview LaTeX for the user; a few do, under the hoo
 
 ¹ via the [`org-latex-to-svg`](https://github.com/alberti42/org-latex-to-svg) front-end (the engine supplies the numbering metadata; the front-end assigns numbers and resolves `\ref` / `\eqref`). ² SVG output requires `preview-dvisvgm`.
 
-Two things set this library apart, both a consequence of compiling each equation on its own and naming it by content:
+What sets this stack apart is that it pulls together strengths that used to live in separate tools:
 
-- a theme switch, or a font/zoom change, updates previews straight from the cache with no LaTeX run — the others bake the colour and size into the image, so they re-run LaTeX;
-- the cache is shared across front-ends and sessions, and the renderer takes a bare string, so it works outside a `.tex` document (for example, math in an agent's chat output).
+- **Numbered equations + working `\ref` / `\eqref`** — the AUCTeX-based packages get these by compiling a whole `.tex`; here the [`org-latex-to-svg`](https://github.com/alberti42/org-latex-to-svg) front-end assigns each block's numbers (folded in as a `\setcounter`) and reads the true counter back through the engine's compile-metadata sidecar, so every fragment still compiles alone.
+- **Recolour + rescale from cache** — a theme switch, or a font/zoom change, updates previews with no LaTeX run; the others bake the colour and size into the image and must re-run LaTeX.
+- **Fast builds** — `.fmt` preamble precompilation (see [Preamble precompilation](#preamble-precompilation-fmt)).
+- **A shared, bare-string cache** — content-addressed and shared across front-ends and sessions, and the renderer takes a bare string, so it works outside a `.tex` document (for example, math in an agent's chat output).
+
+The last two fall out of compiling each equation on its own and naming it by content.
 
 The closest relative is the in-progress next-generation `org-latex-preview` by tecosaur and karthink: it also caches a color-independent (`currentColor`) SVG that re-tints from cache on a theme change, and pioneered the `.fmt` preamble precompilation this library adopts (see [Preamble precompilation](#preamble-precompilation-fmt)). The difference is packaging — it ships as part of a patched Org branch and is Org-only, while `latex-to-svg` is a standalone library any front-end (or a bare string, in any buffer) can call.
 
-Equation numbering used to be the gap: the AUCTeX-based packages compile a whole document, so `\ref` / `\eqref` and equation numbers come out right on their own, whereas here each fragment is compiled alone. The [`org-latex-to-svg`](https://github.com/alberti42/org-latex-to-svg) front-end closes it — it scans the buffer to assign each block's numbers (folded into the fragment as a `\setcounter`), reads the true final counter back through the engine's compile-metadata sidecar, and renders `\ref` / `\eqref` as the resolved number with click-to-jump. As far as we know, this is the only stack that combines numbered equations **and** working `\ref` / `\eqref` links **and** `.fmt` precompilation **and** recolour/rescale from cache: the tecosaur/karthink fork has `.fmt` and cache-recolour but only partial numbering and no full cross-references, while the AUCTeX packages have numbering and references but no `.fmt` and no cache-recolour.
+Equation numbering used to be the gap: the AUCTeX-based packages compile a whole document, so `\ref` / `\eqref` and equation numbers come out right on their own, whereas here each fragment is compiled alone. The [`org-latex-to-svg`](https://github.com/alberti42/org-latex-to-svg) front-end closes it — it scans the buffer to assign each block's numbers (folded into the fragment as a `\setcounter`), reads the true final counter back through the engine's compile-metadata sidecar, and renders `\ref` / `\eqref` as the resolved number with click-to-jump. To our knowledge, this is the only stack that combines numbered equations **and** working `\ref` / `\eqref` links **and** `.fmt` precompilation **and** recolour/rescale from cache: the tecosaur/karthink fork has `.fmt` and cache-recolour but only partial numbering and no full cross-references, while the AUCTeX packages have numbering and references but no `.fmt` and no cache-recolour.
 
 ## Requirements
 
