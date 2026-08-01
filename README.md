@@ -32,6 +32,35 @@ the render:
   them, a placeholder panel boxing the raw LaTeX is shown instead (or set
   `latex-to-svg-use-placeholder`).
 
+## Installation
+
+The package (feature) is `latex-to-svg`; the repository is
+**`alberti42/emacs-latex-to-svg`** (the `emacs-` prefix disambiguates the repo
+name). It is not on MELPA yet, so install straight from the repository. This is
+a *library* — you normally install it as a dependency of a front-end (e.g.
+[`org-latex-to-svg`](https://github.com/alberti42/org-latex-to-svg) or
+`agent-shell-math-renderer`), declaring it *before* the front-end.
+
+```elisp
+;; use-package + :vc (Emacs 30+)
+(use-package latex-to-svg
+  :vc (:url "https://github.com/alberti42/emacs-latex-to-svg" :rev :newest))
+
+;; use-package + straight
+(use-package latex-to-svg
+  :straight (latex-to-svg :type git :host github
+                          :repo "alberti42/emacs-latex-to-svg"))
+
+;; elpaca
+(elpaca (latex-to-svg :host github :repo "alberti42/emacs-latex-to-svg"))
+
+;; Emacs 29+ builtin, no package manager
+(package-vc-install "https://github.com/alberti42/emacs-latex-to-svg")
+```
+
+Note the recipe *name* stays `latex-to-svg` (the feature you `require`), while
+`:repo` is `alberti42/emacs-latex-to-svg`.
+
 ## API
 
 ```elisp
