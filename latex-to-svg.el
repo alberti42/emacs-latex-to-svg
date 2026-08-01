@@ -5,7 +5,7 @@
 ;; Author: Andrea Alberti <a.alberti82@gmail.com>
 ;; Maintainer: Andrea Alberti <a.alberti82@gmail.com>
 ;; URL: https://github.com/alberti42/latex-to-svg
-;; Version: 0.2.1
+;; Version: 0.2.2
 ;; Package-Requires: ((emacs "29.1"))
 ;; Keywords: tex, math, images
 
@@ -142,9 +142,8 @@ Equation images are scaled so LaTeX's 10pt body font maps onto the
 buffer's font height; this multiplier rides on top of that match.
 1.0 makes equation text the same size as the surrounding text;
 greater than 1 enlarges, less than 1 shrinks.  Because the match is
-recomputed from the current font, equations track the buffer font
-across themes and faces (a front-end calls `latex-to-svg-flush-metrics'
-then re-renders after a pure font-size change)."
+recomputed from the current font on each render, equations track the
+buffer font across themes, faces, and text scale."
   :type 'number
   :safe #'numberp
   :group 'latex-to-svg)
@@ -176,13 +175,25 @@ spawns LaTeX compiles whose images it never displays."
   :safe #'booleanp
   :group 'latex-to-svg)
 
-;;;; State
+(defcustom latex-to-svg-svg-dpi 96.0
+  "Dots-per-inch Emacs's SVG renderer uses to convert points to pixels.
 
-(defvar latex-to-svg--svg-px-per-pt nil
-  "Cached pixels-per-point Emacs uses to render SVG images.
-Measured once on a graphical frame by `latex-to-svg--svg-px-per-pt'
-\(so HiDPI / image scaling is captured exactly); nil until then.
-Reset by `latex-to-svg-flush-metrics'.")
+Used to size equation previews to the buffer font: an SVG `pt' is
+rendered as `latex-to-svg-svg-dpi' / 72 pixels.  librsvg (Emacs's SVG
+backend) converts SVG length units at 96 DPI, so the default suits
+almost all systems; override only if previews come out uniformly too
+big or too small.  HiDPI is handled separately by `image-scaling-factor'
+\(it scales the reference and the equation alike, so it cancels) and
+does not belong here.
+
+This replaced a per-frame `image-size' measurement that proved
+unreliable on some ports (returning wildly different pixel sizes for
+the same undisplayed SVG), which made preview sizing non-deterministic."
+  :type 'number
+  :safe #'numberp
+  :group 'latex-to-svg)
+
+;;;; State
 
 ;; image-cache key = content key (sha1 of latex + preamble + style) plus the
 ;; display scale and tint color, via `latex-to-svg--image-cache-key'.  Folding
@@ -293,26 +304,21 @@ display time), so neither size nor color is part of this key."
 
 ;;;; Scale
 
+(defun latex-to-svg--graphic-frame ()
+  "Return a graphical frame to measure font metrics against, or nil.
+Prefer the selected frame when it is graphical; otherwise any graphical
+frame (so a render triggered while a TTY/daemon frame is selected — e.g.
+an async compile callback — still sizes against the GUI rather than
+collapsing to the fallback scale)."
+  (if (display-graphic-p)
+      (selected-frame)
+    (seq-find #'display-graphic-p (frame-list))))
+
 (defun latex-to-svg--svg-px-per-pt ()
   "Return how many pixels Emacs renders one SVG point as.
-
-Measured once from a reference SVG declared at a known point size
-\(so HiDPI and `image-scaling-factor' are captured exactly — the
-same factor applies to equation images, so it cancels in the size
-ratio) and cached in `latex-to-svg--svg-px-per-pt'.  Falls back to
-96/72 (the usual 96-DPI ratio) when not on a graphical frame or
-measurement fails; the fallback is not cached, so a later graphical
-frame can still measure."
-  (or latex-to-svg--svg-px-per-pt
-      (and (display-graphic-p)
-           (ignore-errors
-             (let* ((svg (concat "<svg xmlns='http://www.w3.org/2000/svg' "
-                                 "width='100pt' height='100pt'>"
-                                 "<rect width='100pt' height='100pt'/></svg>"))
-                    (size (image-size (create-image svg 'svg t) t)))
-               (setq latex-to-svg--svg-px-per-pt
-                     (/ (cdr size) 100.0)))))
-      (/ 96.0 72.0)))
+A constant derived from `latex-to-svg-svg-dpi' (SVG `pt' = dpi/72 px).
+Not measured — see `latex-to-svg-svg-dpi' for why."
+  (/ latex-to-svg-svg-dpi 72.0))
 
 (defun latex-to-svg-display-scale ()
   "Return the `create-image' :scale that sizes equations to the buffer font.
@@ -321,23 +327,34 @@ Maps the LaTeX document's 10pt body font (the `standalone' default,
 compiled at dvisvgm scale 1, so 10pt of LaTeX = 10 SVG points) onto
 the buffer's font pixel height, times `latex-to-svg-font-scale'.  An
 equation's displayed font height is (10 * px-per-pt * scale) px, so
-scale = target * font-scale / (10 * px-per-pt).  Returns 1.0 when
-the font height can't be determined (batch / non-graphical),
-leaving the image at its natural size."
-  (let ((target (and (display-graphic-p)
-                     (ignore-errors (default-font-height)))))
+scale = target * font-scale / (10 * px-per-pt), where px-per-pt is the
+deterministic `latex-to-svg-svg-dpi' / 72.
+
+The font height is read against a graphical frame (see
+`latex-to-svg--graphic-frame') with the current buffer kept current, so
+it honours a buffer-local text scale and does not collapse to 1.0 when
+an async render fires while a TTY frame is selected.  Returns 1.0 only
+when no graphical frame exists (truly headless), leaving the image at
+its natural size."
+  (let* ((buf (current-buffer))
+         (frame (latex-to-svg--graphic-frame))
+         (target (and frame
+                      (ignore-errors
+                        (with-selected-frame frame
+                          (with-current-buffer buf
+                            (default-font-height)))))))
     (if target
         (/ (* target latex-to-svg-font-scale)
            (* 10.0 (latex-to-svg--svg-px-per-pt)))
       1.0)))
 
 (defun latex-to-svg-flush-metrics ()
-  "Drop the cached pixels-per-point calibration.
-Call after a display / scaling change (new monitor, HiDPI toggle)
-so the next `latex-to-svg-display-scale' re-measures.  The on-disk
-and in-memory image caches are untouched — they are keyed per scale,
-so a new size just adds entries."
-  (setq latex-to-svg--svg-px-per-pt nil))
+  "Deprecated no-op, kept for API compatibility.
+Preview sizing is now derived deterministically from the buffer font
+and `latex-to-svg-svg-dpi', so there is no measured calibration to
+flush.  (Previously this reset a cached, and unreliable, `image-size'
+measurement.)"
+  nil)
 
 ;;;; Image build
 

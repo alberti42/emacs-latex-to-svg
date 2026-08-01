@@ -109,42 +109,40 @@
 
 ;;;; Scale
 
-(ert-deftest latex-to-svg-display-scale-is-1-when-non-graphical ()
-  ;; Off a graphical frame (batch, the daemon-prerender path) the font
-  ;; height is unknown, so the image is left at natural size.
-  (cl-letf (((symbol-function 'display-graphic-p) (lambda (&rest _) nil)))
+(ert-deftest latex-to-svg-display-scale-is-1-when-headless ()
+  ;; With no graphical frame at all (batch) the font height is unknown, so
+  ;; the image is left at natural size.
+  (cl-letf (((symbol-function 'latex-to-svg--graphic-frame) (lambda () nil)))
     (should (equal (latex-to-svg-display-scale) 1.0))))
 
-(ert-deftest latex-to-svg-svg-px-per-pt-falls-back-uncached ()
-  ;; Without a graphical frame the calibration returns the 96/72 fallback
-  ;; and must NOT cache it, so a later graphical frame can still measure.
-  (let ((latex-to-svg--svg-px-per-pt nil))
-    (cl-letf (((symbol-function 'display-graphic-p) (lambda (&rest _) nil)))
-      (should (equal (latex-to-svg--svg-px-per-pt) (/ 96.0 72.0)))
-      (should-not latex-to-svg--svg-px-per-pt))))
+(ert-deftest latex-to-svg-px-per-pt-is-deterministic ()
+  ;; Pixels-per-point is a pure function of `latex-to-svg-svg-dpi' — no
+  ;; measurement, so it never varies between calls (the bug this fixed).
+  (let ((latex-to-svg-svg-dpi 96.0))
+    (should (equal (latex-to-svg--svg-px-per-pt) (/ 96.0 72.0))))
+  (let ((latex-to-svg-svg-dpi 144.0))
+    (should (equal (latex-to-svg--svg-px-per-pt) 2.0))))
 
 (ert-deftest latex-to-svg-display-scale-matches-font ()
   ;; The display scale maps the LaTeX 10pt body font onto the buffer font
-  ;; height: scale = target * font-scale / (10 * px-per-pt).
-  (cl-letf (((symbol-function 'display-graphic-p) (lambda (&rest _) t))
-            ((symbol-function 'default-font-height) (lambda (&rest _) 28))
-            ((symbol-function 'latex-to-svg--svg-px-per-pt)
-             (lambda () 2.0)))
-    (let ((latex-to-svg-font-scale 1.0))
-      (should (equal (latex-to-svg-display-scale)
-                     (/ 28.0 (* 10.0 2.0)))))
-    ;; Doubling font-scale doubles the displayed size.
-    (let* ((latex-to-svg-font-scale 1.0)
-           (base (latex-to-svg-display-scale))
-           (latex-to-svg-font-scale 2.0))
-      (should (equal (latex-to-svg-display-scale) (* 2 base))))))
+  ;; height: scale = target * font-scale / (10 * dpi/72).  Stub the graphic
+  ;; frame + font height so the arithmetic is checked deterministically.
+  (cl-letf (((symbol-function 'latex-to-svg--graphic-frame)
+             (lambda () (selected-frame)))
+            ((symbol-function 'default-font-height) (lambda (&rest _) 28)))
+    (let ((latex-to-svg-svg-dpi 144.0))   ; dpi/72 = 2.0
+      (let ((latex-to-svg-font-scale 1.0))
+        (should (equal (latex-to-svg-display-scale)
+                       (/ 28.0 (* 10.0 2.0)))))
+      ;; Doubling font-scale doubles the displayed size.
+      (let* ((latex-to-svg-font-scale 1.0)
+             (base (latex-to-svg-display-scale))
+             (latex-to-svg-font-scale 2.0))
+        (should (equal (latex-to-svg-display-scale) (* 2 base)))))))
 
-(ert-deftest latex-to-svg-flush-metrics-resets-calibration ()
-  ;; `latex-to-svg-flush-metrics' drops the cached pixels-per-point so a
-  ;; later call re-measures.
-  (let ((latex-to-svg--svg-px-per-pt 3.0))
-    (latex-to-svg-flush-metrics)
-    (should-not latex-to-svg--svg-px-per-pt)))
+(ert-deftest latex-to-svg-flush-metrics-is-noop ()
+  ;; Kept for API compatibility; deterministic sizing means it does nothing.
+  (should-not (latex-to-svg-flush-metrics)))
 
 ;;;; Appearance
 

@@ -65,7 +65,7 @@ Helpers a front-end typically needs for its refresh policy:
 | `latex-to-svg-appearance` | `(FOREGROUND BACKGROUND FONT-HEIGHT)` signature to detect color/size change |
 | `latex-to-svg-display-scale` | the `:scale` mapping the equation to the buffer font |
 | `latex-to-svg-foreground-color` | current tint color (`#rrggbb`) |
-| `latex-to-svg-flush-metrics` | drop the pixels-per-point calibration after a display change |
+| `latex-to-svg-flush-metrics` | deprecated no-op (sizing is now deterministic; kept for API compatibility) |
 | `latex-to-svg-invalidate` | forget a cached render (delete its on-disk SVG + in-memory images) so the next call recompiles — an escape hatch for a stale/corrupt cache |
 
 ### Sketch of a front-end
@@ -86,7 +86,14 @@ Helpers a front-end typically needs for its refresh policy:
 
 `latex-to-svg-latex-program`, `-dvisvgm-program`, `-preamble`,
 `-appended-preamble`, `-cache-directory` (default `$XDG_CACHE_HOME/latex-to-svg/`),
-`-font-scale`, `-use-placeholder`, `-render-on-non-graphic`.
+`-font-scale`, `-use-placeholder`, `-render-on-non-graphic`, `-svg-dpi`
+(points→pixels conversion for sizing; default 96, rarely needs changing).
+
+Preview size is derived deterministically from the buffer font height and
+`-svg-dpi` (SVG `pt` = dpi/72 px). Earlier versions measured this per-frame with
+`image-size`, which proved unreliable on some ports (returning wildly different
+pixel sizes for the same undisplayed SVG) and made preview sizes
+non-deterministic — that measurement was removed in 0.2.2.
 
 ## Tests
 
