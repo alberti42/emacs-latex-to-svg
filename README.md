@@ -94,7 +94,6 @@ Helpers a front-end typically needs for its refresh policy:
 | `latex-to-svg-appearance` | `(FOREGROUND BACKGROUND FONT-HEIGHT)` signature to detect color/size change |
 | `latex-to-svg-display-scale` | the `:scale` mapping the equation to the buffer font |
 | `latex-to-svg-foreground-color` | current tint color (`#rrggbb`) |
-| `latex-to-svg-flush-metrics` | deprecated no-op (sizing is now deterministic; kept for API compatibility) |
 | `latex-to-svg-invalidate` | forget a cached render (delete its on-disk SVG + in-memory images, and its `.eld` sidecar) so the next call recompiles — an escape hatch for a stale/corrupt cache |
 | `latex-to-svg-metadata` | read back compile metadata for a LaTeX body (see below), on cache hit or miss |
 

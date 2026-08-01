@@ -158,10 +158,6 @@
     (should (equal (latex-to-svg-display-scale) 1.0))
     (should (equal (latex-to-svg-display-scale 1.3) 1.3))))
 
-(ert-deftest latex-to-svg-flush-metrics-is-noop ()
-  ;; Kept for API compatibility; deterministic sizing means it does nothing.
-  (should-not (latex-to-svg-flush-metrics)))
-
 ;;;; Appearance
 
 (ert-deftest latex-to-svg-appearance-tracks-color-and-font ()

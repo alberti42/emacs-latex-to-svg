@@ -73,8 +73,7 @@
 ;;
 ;; Helpers a front-end typically needs for its refresh policy:
 ;; `latex-to-svg-available-p', `latex-to-svg-appearance',
-;; `latex-to-svg-display-scale', `latex-to-svg-foreground-color', and
-;; `latex-to-svg-flush-metrics'.
+;; `latex-to-svg-display-scale', and `latex-to-svg-foreground-color'.
 
 ;;; Code:
 
@@ -421,14 +420,6 @@ leaving the image at its natural size."
         (/ (* target latex-to-svg-font-scale rescale-by)
            (* 10.0 (latex-to-svg--svg-px-per-pt)))
       rescale-by)))
-
-(defun latex-to-svg-flush-metrics ()
-  "Deprecated no-op, kept for API compatibility.
-Preview sizing is now derived deterministically from the buffer font
-and `latex-to-svg-svg-dpi', so there is no measured calibration to
-flush.  (Previously this reset a cached, and unreliable, `image-size'
-measurement.)"
-  nil)
 
 ;;;; Image build
 
