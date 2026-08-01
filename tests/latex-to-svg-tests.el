@@ -314,6 +314,117 @@
         (should-not (latex-to-svg-invalidate "$never-rendered$"))
       (delete-directory latex-to-svg-cache-directory t))))
 
+;;;; Compile metadata (.eld sidecar)
+
+(defun latex-to-svg-tests--write-log (key body)
+  "Write a fake compile scratch dir containing BODY as `equation.log'.
+Return the scratch directory (caller deletes it).  KEY is unused here but
+kept for symmetry with the compile pipeline."
+  (ignore key)
+  (let ((dir (make-temp-file "l2s-log" t)))
+    (with-temp-file (expand-file-name "equation.log" dir) (insert body))
+    dir))
+
+(ert-deftest latex-to-svg-metadata-round-trips ()
+  ;; With a prefix set, `--write-metadata' captures FINAL (first integer on a
+  ;; matching log line) and pairs it with the caller-supplied INITIAL, storing
+  ;; `(INITIAL . FINAL)'; `latex-to-svg-metadata' reads it back on a cache hit.
+  (let ((latex-to-svg-cache-directory (make-temp-file "l2s-meta" t))
+        (latex-to-svg-metadata-prefix "L2S"))
+    (unwind-protect
+        (let* ((latex "\\setcounter{equation}{2}\\begin{equation}x\\end{equation}")
+               (key (latex-to-svg--cache-key latex))
+               (dir (latex-to-svg-tests--write-log
+                     key (concat "This is pdfTeX...\n"
+                                 "Overfull \\hbox ...\n"
+                                 "L2S 3\n"))))
+          (unwind-protect
+              (progn
+                ;; INITIAL = K+1 = 3, supplied by the caller; FINAL = 3 from log.
+                (latex-to-svg--write-metadata key dir 3)
+                (should (file-exists-p (latex-to-svg--meta-file key)))
+                (should (equal (latex-to-svg-metadata latex)
+                               '(:v 1 :nums (3 . 3)))))
+            (delete-directory dir t)))
+      (delete-directory latex-to-svg-cache-directory t))))
+
+(ert-deftest latex-to-svg-metadata-disabled-writes-nothing ()
+  ;; With no prefix the engine captures nothing and writes no sidecar.
+  (let ((latex-to-svg-cache-directory (make-temp-file "l2s-meta-off" t))
+        (latex-to-svg-metadata-prefix nil))
+    (unwind-protect
+        (let* ((key (latex-to-svg--cache-key "$x$"))
+               (dir (latex-to-svg-tests--write-log key "L2S 3\n")))
+          (unwind-protect
+              (progn
+                (latex-to-svg--write-metadata key dir 3)
+                (should-not (file-exists-p (latex-to-svg--meta-file key)))
+                (should-not (latex-to-svg-metadata "$x$")))
+            (delete-directory dir t)))
+      (delete-directory latex-to-svg-cache-directory t))))
+
+(ert-deftest latex-to-svg-metadata-needs-a-final ()
+  ;; No FINAL captured from the log => no sidecar (nothing to reconcile).
+  (let ((latex-to-svg-cache-directory (make-temp-file "l2s-meta-none" t))
+        (latex-to-svg-metadata-prefix "L2S"))
+    (unwind-protect
+        (let* ((key (latex-to-svg--cache-key "$x$"))
+               (dir (latex-to-svg-tests--write-log key "just noise\n")))
+          (unwind-protect
+              (progn
+                (latex-to-svg--write-metadata key dir 3)
+                (should-not (file-exists-p (latex-to-svg--meta-file key))))
+            (delete-directory dir t)))
+      (delete-directory latex-to-svg-cache-directory t))))
+
+(ert-deftest latex-to-svg-metadata-missing-and-corrupt-yield-nil ()
+  ;; No sidecar => nil; a half-written / corrupt sidecar => nil, not an error.
+  (let ((latex-to-svg-cache-directory (make-temp-file "l2s-meta-bad" t)))
+    (unwind-protect
+        (progn
+          (should-not (latex-to-svg-metadata "$never$"))
+          (with-temp-file (latex-to-svg--meta-file (latex-to-svg--cache-key "$x$"))
+            (insert "(:v 1 :nums (3 . "))    ; truncated, unreadable
+          (should-not (latex-to-svg-metadata "$x$")))
+      (delete-directory latex-to-svg-cache-directory t))))
+
+(ert-deftest latex-to-svg-metadata-captured-from-real-compile ()
+  ;; End to end (needs latex + dvisvgm): a `\typeout{L2S-AFTER=...}' injected
+  ;; into the body is captured from the real compile log into `<key>.eld' and
+  ;; read back — exercising actual TeX log formatting, not a synthetic log.
+  (skip-unless (latex-to-svg-tools-available-p))
+  (let ((latex-to-svg-cache-directory (make-temp-file "l2s-meta-e2e" t))
+        (latex-to-svg-metadata-prefix "L2S"))
+    (unwind-protect
+        (cl-letf (((symbol-function 'latex-to-svg-available-p) (lambda () t)))
+          (let* ((doc (concat "\\setcounter{equation}{6}%\n"
+                              "\\begin{equation}x=1\\end{equation}\n"
+                              "\\typeout{L2S \\arabic{equation}}%\n"))
+                 (done 'pending))
+            ;; INITIAL = K+1 = 7 supplied in Elisp; FINAL = 7 from the compile.
+            (latex-to-svg doc :callback (lambda () (setq done t)) :metadata 7)
+            (dotimes (_ 100)
+              (when (eq done 'pending) (accept-process-output nil 0.1)))
+            (should (eq done t))
+            (should (equal (latex-to-svg-metadata doc)
+                           '(:v 1 :nums (7 . 7))))))
+      (delete-directory latex-to-svg-cache-directory t))))
+
+(ert-deftest latex-to-svg-invalidate-drops-metadata-sidecar ()
+  ;; Invalidate removes the `.eld' alongside the `.svg' so they stay coupled.
+  (let ((latex-to-svg-cache-directory (make-temp-file "l2s-meta-inv" t)))
+    (unwind-protect
+        (let* ((key (latex-to-svg--cache-key "$x$"))
+               (svg (latex-to-svg--svg-file key))
+               (meta (latex-to-svg--meta-file key)))
+          (with-temp-file svg (insert "<svg/>"))
+          (with-temp-file meta (prin1 '(:v 1 :nums (1 . 1))
+                                      (current-buffer)))
+          (latex-to-svg-invalidate "$x$")
+          (should-not (file-exists-p svg))
+          (should-not (file-exists-p meta)))
+      (delete-directory latex-to-svg-cache-directory t))))
+
 (provide 'latex-to-svg-tests)
 
 ;;; latex-to-svg-tests.el ends here

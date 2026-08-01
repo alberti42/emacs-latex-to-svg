@@ -133,7 +133,45 @@ Helpers a front-end typically needs for its refresh policy:
 | `latex-to-svg-display-scale` | the `:scale` mapping the equation to the buffer font |
 | `latex-to-svg-foreground-color` | current tint color (`#rrggbb`) |
 | `latex-to-svg-flush-metrics` | deprecated no-op (sizing is now deterministic; kept for API compatibility) |
-| `latex-to-svg-invalidate` | forget a cached render (delete its on-disk SVG + in-memory images) so the next call recompiles — an escape hatch for a stale/corrupt cache |
+| `latex-to-svg-invalidate` | forget a cached render (delete its on-disk SVG + in-memory images, and its `.eld` sidecar) so the next call recompiles — an escape hatch for a stale/corrupt cache |
+| `latex-to-svg-metadata` | read back compile metadata for a LaTeX body (see below), on cache hit or miss |
+
+### Compile metadata (`.eld` sidecar)
+
+A compile can pair a value the caller already knows with a number the *compile*
+produces, and cache the pair next to the SVG — so a front-end can read it back
+**without recompiling** (e.g. the range of equation numbers a block shows). It
+is opt-in and the engine stays unaware of what the numbers mean.
+
+The division of labour: the caller passes what it knows (`INITIAL`) as a Lisp
+value via `:metadata`; only the thing the compile computes (`FINAL`) travels
+through LaTeX, `\typeout`-ed on a line beginning with
+`latex-to-svg-metadata-prefix`:
+
+```elisp
+(latex-to-svg
+  (concat "\\setcounter{equation}{6}%\n"          ; K = 6
+          "\\begin{equation}x=1\\end{equation}\n"
+          "\\typeout{L2S \\arabic{equation}}%\n") ; -> FINAL in the log
+  :callback #'my-refresh
+  :metadata 7)                                    ; INITIAL = K+1, from Elisp
+```
+
+With `latex-to-svg-metadata-prefix` set to `"L2S"`, a successful compile takes
+the first integer on a matching log line (`FINAL`), pairs it with `:metadata`
+(`INITIAL`), and writes `<hash>.eld` beside `<hash>.svg`:
+
+```elisp
+;; metadata schema, v1
+(:v 1 :nums (INITIAL . FINAL))     ; e.g. (:v 1 :nums (7 . 7))
+```
+
+`(latex-to-svg-metadata BODY)` returns that plist (or `nil` if absent/corrupt).
+Here the block shows equation numbers `INITIAL`…`FINAL` (just `(7)`);
+`FINAL < INITIAL` means it produced none. `latex-to-svg-invalidate` deletes the
+`.eld` with the SVG. `\typeout` has no visual effect, so the SVG is
+byte-identical to an un-probed one (only its content hash differs). Keep the
+emitted line short — TeX wraps log lines near column 80.
 
 ### Sketch of a front-end
 
@@ -154,7 +192,8 @@ Helpers a front-end typically needs for its refresh policy:
 `latex-to-svg-latex-program`, `-dvisvgm-program`, `-preamble`,
 `-appended-preamble`, `-cache-directory` (default `$XDG_CACHE_HOME/latex-to-svg/`),
 `-font-scale`, `-use-placeholder`, `-render-on-non-graphic`, `-svg-dpi`
-(points→pixels conversion for sizing; default 96, rarely needs changing).
+(points→pixels conversion for sizing; default 96, rarely needs changing),
+`-metadata-prefix` (nil = off; enable the `.eld` compile-metadata capture above).
 
 Preview size is derived deterministically from the buffer font height and
 `-svg-dpi` (SVG `pt` = dpi/72 px). Earlier versions measured this per-frame with

@@ -5,7 +5,7 @@
 ;; Author: Andrea Alberti <a.alberti82@gmail.com>
 ;; Maintainer: Andrea Alberti <a.alberti82@gmail.com>
 ;; URL: https://github.com/alberti42/emacs-latex-to-svg
-;; Version: 0.2.2
+;; Version: 0.3.0
 ;; Package-Requires: ((emacs "29.1"))
 ;; Keywords: tex, math, images
 
@@ -133,6 +133,21 @@ equation compiles at most once ever.  Because the cache is
 content-addressed and color/size-independent, it is safe to share
 across every front-end and buffer."
   :type '(choice (const :tag "Default XDG cache" nil) directory)
+  :group 'latex-to-svg)
+
+(defcustom latex-to-svg-metadata-prefix nil
+  "Line prefix marking compile metadata to capture, or nil to disable.
+When a string, after each successful compile the first integer on a LaTeX
+log line beginning with it (the FINAL value) is paired with the caller's
+`:metadata' value (the INITIAL value) and stored as the cons
+`(:v 1 :nums (INITIAL . FINAL))' in the equation's `.eld' sidecar next to
+its SVG, exposed by `latex-to-svg-metadata' (on cache hit or miss).
+
+So the caller supplies INITIAL directly (a value it already knows, in
+Elisp), and only FINAL — the thing the compile computes — travels through
+LaTeX, emitted with `\\typeout{PREFIX \\arabic{COUNTER}}'.  Keep that line
+short: TeX wraps log lines near column 80."
+  :type '(choice (const :tag "Disabled" nil) string)
   :group 'latex-to-svg)
 
 (defcustom latex-to-svg-font-scale 1.0
@@ -300,6 +315,11 @@ display time), so neither size nor color is part of this key."
 (defun latex-to-svg--svg-file (key)
   "Return the cache SVG path for KEY."
   (expand-file-name (concat key ".svg")
+                    (latex-to-svg--cache-dir)))
+
+(defun latex-to-svg--meta-file (key)
+  "Return the compile-metadata sidecar path for KEY (a `.eld' next to the SVG)."
+  (expand-file-name (concat key ".eld")
                     (latex-to-svg--cache-dir)))
 
 ;;;; Scale
@@ -485,8 +505,39 @@ emitted with a clickable link to it."
                                 'action (lambda (_) (find-file log-dst))
                                 'help-echo "Open LaTeX log"))))))))
 
-(defun latex-to-svg--compile (key latex)
+(defun latex-to-svg--write-metadata (key dir initial)
+  "Write KEY's `.eld' sidecar pairing INITIAL with the compile's FINAL.
+Scans the just-finished compile's `equation.log' in scratch DIR for the
+first integer on a line beginning with `latex-to-svg-metadata-prefix'
+\(FINAL), and writes `(:v 1 :nums (INITIAL . FINAL))' to `<KEY>.eld'.
+INITIAL is the caller's value (from `latex-to-svg's `:metadata'), stored
+verbatim.  Writes nothing when the prefix is nil or no FINAL was found.
+Called on a successful compile, before DIR is cleaned up."
+  (when latex-to-svg-metadata-prefix
+    (let ((log (expand-file-name "equation.log" dir))
+          (final nil))
+      (when (file-readable-p log)
+        (with-temp-buffer
+          (insert-file-contents log)
+          (goto-char (point-min))
+          (while (and (not final) (not (eobp)))
+            (let ((line (buffer-substring-no-properties
+                         (line-beginning-position) (line-end-position))))
+              (when (string-prefix-p latex-to-svg-metadata-prefix line)
+                (let ((rest (substring line (length latex-to-svg-metadata-prefix))))
+                  (when (string-match "-?[0-9]+" rest)
+                    (setq final (string-to-number (match-string 0 rest)))))))
+            (forward-line 1))))
+      (when final
+        (ignore-errors
+          (with-temp-file (latex-to-svg--meta-file key)
+            (prin1 (list :v 1 :nums (cons initial final)) (current-buffer))))))))
+
+(defun latex-to-svg--compile (key latex &optional metadata)
   "Asynchronously compile LATEX to the color-independent cache SVG for KEY.
+METADATA, when non-nil, is stored as the INITIAL value in KEY's `.eld'
+sidecar alongside the FINAL captured from the log (see
+`latex-to-svg--write-metadata').
 
 LATEX is placed verbatim in the document body (the caller supplies
 valid body LaTeX and chooses inline vs display via delimiters).
@@ -543,11 +594,14 @@ re-tints from cache without recompiling."
                (if (and (eq (process-status process) 'exit)
                         (zerop (process-exit-status process))
                         (file-exists-p svg))
-                   (dolist (cb (gethash key latex-to-svg--pending))
-                     (condition-case cb-err
-                         (funcall cb)
-                       (error
-                        (message "latex-to-svg: callback error: %S" cb-err))))
+                   (progn
+                     ;; Capture compile metadata before DIR is cleaned up.
+                     (latex-to-svg--write-metadata key dir metadata)
+                     (dolist (cb (gethash key latex-to-svg--pending))
+                       (condition-case cb-err
+                           (funcall cb)
+                         (error
+                          (message "latex-to-svg: callback error: %S" cb-err)))))
                  (latex-to-svg--compile-failed key latex dir))
                (remhash key latex-to-svg--pending)
                (funcall cleanup))))
@@ -557,22 +611,28 @@ re-tints from cache without recompiling."
          (funcall cleanup)
          (signal (car err) (cdr err)))))))
 
-(defun latex-to-svg--enqueue (key latex callback)
+(defun latex-to-svg--enqueue (key latex callback &optional metadata)
   "Queue CALLBACK for KEY and start a compile if none is running.
 
 KEY identifies the equation; LATEX is forwarded to
-`latex-to-svg--compile' for the render.  Multiple callbacks sharing
-KEY (the same equation requested more than once) are coalesced onto a
-single in-flight compile; all are notified when it finishes."
+`latex-to-svg--compile' for the render, along with METADATA (the INITIAL
+value for the `.eld' sidecar).  Multiple callbacks sharing KEY (the same
+equation requested more than once) are coalesced onto a single in-flight
+compile; all are notified when it finishes."
   (let ((pending (gethash key latex-to-svg--pending)))
     (puthash key (cons callback pending) latex-to-svg--pending)
     (unless pending
-      (latex-to-svg--compile key latex))))
+      (latex-to-svg--compile key latex metadata))))
 
 ;;;; Public entry point
 
-(cl-defun latex-to-svg (latex &key callback)
+(cl-defun latex-to-svg (latex &key callback metadata)
   "Return an SVG image for LATEX, or nil while it compiles.
+
+METADATA, when non-nil and `latex-to-svg-metadata-prefix' is set, is the
+INITIAL value stored in this equation's `.eld' sidecar (see
+`latex-to-svg-metadata'); the FINAL value is captured from the compile
+log.  It is only recorded when a compile actually runs (a miss).
 
 LATEX is placed *verbatim* in the LaTeX document body, so it must be
 valid there: pass math with its delimiters (`$x$', `\\(x\\)', `\\[x\\]')
@@ -607,7 +667,7 @@ the buffer font at build time, so call within the target buffer."
         (or image
             (progn
               (when callback
-                (latex-to-svg--enqueue key latex callback))
+                (latex-to-svg--enqueue key latex callback metadata))
               nil)))))))
 
 ;;;###autoload
@@ -622,16 +682,37 @@ that impossible, so this is an escape hatch, not part of the normal
 flow."
   (let* ((key (latex-to-svg--cache-key latex))
          (file (latex-to-svg--svg-file key))
+         (meta (latex-to-svg--meta-file key))
          (prefix (concat key "@"))
          (stale nil))
     (when (file-exists-p file)
       (delete-file file))
+    ;; Keep the metadata sidecar coupled to its SVG.
+    (when (file-exists-p meta)
+      (delete-file meta))
     (maphash (lambda (k _v)
                (when (string-prefix-p prefix k)
                  (push k stale)))
              latex-to-svg--image-cache)
     (dolist (k stale)
       (remhash k latex-to-svg--image-cache))))
+
+;;;###autoload
+(defun latex-to-svg-metadata (latex)
+  "Return cached compile metadata for LATEX, or nil.
+
+Returns the plist `(:v 1 :nums (INITIAL . FINAL))' read from LATEX's
+`.eld' sidecar: INITIAL is the caller's `:metadata' at render time and
+FINAL is the first integer the compile emitted on a
+`latex-to-svg-metadata-prefix' line.  Available on cache hit or miss once
+LATEX has compiled at least once with the prefix set; nil otherwise (a
+corrupt or half-written sidecar also yields nil)."
+  (let ((file (latex-to-svg--meta-file (latex-to-svg--cache-key latex))))
+    (when (file-readable-p file)
+      (ignore-errors
+        (with-temp-buffer
+          (insert-file-contents file)
+          (read (current-buffer)))))))
 
 (provide 'latex-to-svg)
 
