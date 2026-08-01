@@ -32,7 +32,7 @@ Several other Emacs packages preview LaTeX for the user; a few do, under the hoo
 | [`org-xlatex`](https://github.com/ksqsf/org-xlatex) | MathJax / KaTeX | webkit in an xwidget | Org, xwidgets build | no | no (KaTeX) | no (KaTeX) | no (KaTeX) |
 | [`latex-math-preview`](https://gitlab.com/latex-math-preview/latex-math-preview) | `latex` + `dvipng` | PNG | an interactive command | no | no | no | no |
 
-¹ via the [`org-latex-to-svg`](https://github.com/alberti42/org-latex-to-svg) front-end: the engine supplies the numbering *metadata*, the front-end assigns the numbers and resolves `\ref` / `\eqref` (as click-to-jump links). The MathJax/KaTeX renderers can't do these at all — they render a single fragment in JavaScript, not a full LaTeX document.
+¹ via the [`org-latex-to-svg`](https://github.com/alberti42/org-latex-to-svg) front-end (the engine supplies the numbering metadata; the front-end assigns numbers and resolves `\ref` / `\eqref`).
 
 Two things set this library apart, both a consequence of compiling each equation on its own and naming it by content:
 
