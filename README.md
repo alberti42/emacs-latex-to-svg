@@ -21,18 +21,18 @@ Because the on-disk cache is content-addressed, an equation that appears in both
 
 Several other Emacs packages preview LaTeX for the user; a few do, under the hood, the same string-to-image step this library does. How they relate:
 
-| Package | Renders with | Output | Tied to | Recolor from cache | Eq. numbers | `\ref` / `\eqref` | `.fmt` fast compile |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| **latex-to-svg** (this) | `latex` + `dvisvgm` | SVG | nothing — any buffer, or a bare string | yes | yes¹ | yes¹ | yes |
-| AUCTeX preview-latex (+ `preview-dvisvgm`) | `latex` + `preview.sty` | PNG (SVG with `preview-dvisvgm`) | AUCTeX, a `.tex` document | no — baked in | yes | yes | no |
-| [`texfrag`](https://github.com/TobiasZawada/texfrag) | AUCTeX `preview.el` | PNG (SVG via `preview-dvisvgm`) | AUCTeX; many major modes | no | yes | yes | no |
-| Org `org-latex-preview` (built-in) | `latex` + `dvipng`/`dvisvgm` | PNG or SVG | Org | no — regenerates on theme change | no | no | no |
-| [tecosaur/karthink `org-latex-preview`](https://code.tecosaur.net/tec/org-mode) (fork) | `latex` + `dvisvgm`, `.fmt` | SVG | a patched Org branch — Org-only | yes | partial | partial | yes |
-| [`org-latex-impatient`](https://github.com/yangsheng6810/org-latex-impatient) | MathJax (Node) | SVG in a child frame | Org | no | no (MathJax) | no (MathJax) | no (MathJax) |
-| [`org-xlatex`](https://github.com/ksqsf/org-xlatex) | MathJax / KaTeX | webkit in an xwidget | Org, xwidgets build | no | no (KaTeX) | no (KaTeX) | no (KaTeX) |
-| [`latex-math-preview`](https://gitlab.com/latex-math-preview/latex-math-preview) | `latex` + `dvipng` | PNG | an interactive command | no | no | no | no |
+| Package | Renders → output | Tied to | Recolor | Numbers | `\eqref` | `.fmt` |
+| --- | --- | --- | --- | --- | --- | --- |
+| **latex-to-svg** (this) | `latex`+`dvisvgm` → SVG | any buffer / bare string | yes | yes¹ | yes¹ | yes |
+| AUCTeX preview-latex | `latex`+`preview.sty` → PNG/SVG² | AUCTeX + `.tex` | no | yes | yes | no |
+| [`texfrag`](https://github.com/TobiasZawada/texfrag) | AUCTeX `preview.el` → PNG/SVG² | AUCTeX; many modes | no | yes | yes | no |
+| Org `org-latex-preview` (built-in) | `latex`+`dvipng`/`dvisvgm` → PNG/SVG | Org | no | no | no | no |
+| [tecosaur/karthink `org-latex-preview`](https://code.tecosaur.net/tec/org-mode) (fork) | `latex`+`dvisvgm` (`.fmt`) → SVG | Org branch (fork) | yes | partial | partial | yes |
+| [`org-latex-impatient`](https://github.com/yangsheng6810/org-latex-impatient) | MathJax → SVG (child frame) | Org | no | no | no | no |
+| [`org-xlatex`](https://github.com/ksqsf/org-xlatex) | MathJax/KaTeX → xwidget | Org + xwidgets | no | no | no | no |
+| [`latex-math-preview`](https://gitlab.com/latex-math-preview/latex-math-preview) | `latex`+`dvipng` → PNG | interactive command | no | no | no | no |
 
-¹ via the [`org-latex-to-svg`](https://github.com/alberti42/org-latex-to-svg) front-end (the engine supplies the numbering metadata; the front-end assigns numbers and resolves `\ref` / `\eqref`).
+¹ via the [`org-latex-to-svg`](https://github.com/alberti42/org-latex-to-svg) front-end (the engine supplies the numbering metadata; the front-end assigns numbers and resolves `\ref` / `\eqref`). ² SVG output requires `preview-dvisvgm`.
 
 Two things set this library apart, both a consequence of compiling each equation on its own and naming it by content:
 
