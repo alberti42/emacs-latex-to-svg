@@ -28,11 +28,11 @@ Several other Emacs packages preview LaTeX for the user; a few do, under the hoo
 | [`texfrag`](https://github.com/TobiasZawada/texfrag) | AUCTeX `preview.el` | PNG (SVG via `preview-dvisvgm`) | AUCTeX; many major modes | no | yes | yes | no |
 | Org `org-latex-preview` (built-in) | `latex` + `dvipng`/`dvisvgm` | PNG or SVG | Org | no — regenerates on theme change | no | no | no |
 | [tecosaur/karthink `org-latex-preview`](https://code.tecosaur.net/tec/org-mode) (fork) | `latex` + `dvisvgm`, `.fmt` | SVG | a patched Org branch — Org-only | yes | partial | partial | yes |
-| [`org-latex-impatient`](https://github.com/yangsheng6810/org-latex-impatient) | MathJax (Node) | SVG in a child frame | Org | no | n/a² | n/a² | n/a² |
-| [`org-xlatex`](https://github.com/ksqsf/org-xlatex) | MathJax / KaTeX | webkit in an xwidget | Org, xwidgets build | no | n/a² | n/a² | n/a² |
+| [`org-latex-impatient`](https://github.com/yangsheng6810/org-latex-impatient) | MathJax (Node) | SVG in a child frame | Org | no | no (MathJax) | no (MathJax) | no (MathJax) |
+| [`org-xlatex`](https://github.com/ksqsf/org-xlatex) | MathJax / KaTeX | webkit in an xwidget | Org, xwidgets build | no | no (KaTeX) | no (KaTeX) | no (KaTeX) |
 | [`latex-math-preview`](https://gitlab.com/latex-math-preview/latex-math-preview) | `latex` + `dvipng` | PNG | an interactive command | no | no | no | no |
 
-¹ via the [`org-latex-to-svg`](https://github.com/alberti42/org-latex-to-svg) front-end: the engine supplies the numbering *metadata*, the front-end assigns the numbers and resolves `\ref` / `\eqref` (as click-to-jump links). ² not applicable — a MathJax/KaTeX renderer, not full LaTeX, so document-level equation numbering and cross-references don't apply.
+¹ via the [`org-latex-to-svg`](https://github.com/alberti42/org-latex-to-svg) front-end: the engine supplies the numbering *metadata*, the front-end assigns the numbers and resolves `\ref` / `\eqref` (as click-to-jump links). The MathJax/KaTeX renderers can't do these at all — they render a single fragment in JavaScript, not a full LaTeX document.
 
 Two things set this library apart, both a consequence of compiling each equation on its own and naming it by content:
 
