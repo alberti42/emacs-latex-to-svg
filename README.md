@@ -25,6 +25,44 @@ the render:
   `create-image`'s `:scale`, computed from the buffer font height so equations
   track the font — again no recompile.
 
+## Related packages
+
+`latex-to-svg` is a library, not a preview command: it turns one LaTeX string
+into one image and leaves *finding* equations and *placing* images to a
+front-end (such as
+[`org-latex-to-svg`](https://github.com/alberti42/org-latex-to-svg) or
+`agent-shell-math-renderer`). Several Emacs packages preview LaTeX for the
+user; a few do, under the hood, the same string-to-image step this library
+does. How they relate:
+
+| Package | Renders with | Output | Tied to | Recolor / rescale from cache | Numbering |
+| --- | --- | --- | --- | --- | --- |
+| **latex-to-svg** (this) | `latex` + `dvisvgm` | SVG | nothing — any buffer, or a bare string | yes | not yet |
+| AUCTeX preview-latex (+ `preview-dvisvgm`) | `latex` + `preview.sty` | PNG (SVG with `preview-dvisvgm`) | AUCTeX, a `.tex` document | no — color and size are baked in | yes |
+| [`texfrag`](https://github.com/TobiasZawada/texfrag) | AUCTeX `preview.el` | PNG (SVG via `preview-dvisvgm`) | AUCTeX; works in many major modes | no | yes (per document) |
+| Org `org-latex-preview` (built-in) | `latex` + `dvipng`/`dvisvgm` | PNG or SVG | Org | no — regenerates on a theme change | no |
+| [`org-latex-impatient`](https://github.com/yangsheng6810/org-latex-impatient) | MathJax (Node) | SVG in a child frame | Org | no | — (MathJax, not full LaTeX) |
+| [`org-xlatex`](https://github.com/ksqsf/org-xlatex) | MathJax / KaTeX | webkit in an xwidget | Org, xwidgets build | no | — |
+| [`latex-math-preview`](https://gitlab.com/latex-math-preview/latex-math-preview) | `latex` + `dvipng` | PNG | an interactive command | no | no |
+
+Two things set this library apart, both a consequence of compiling each
+equation on its own and naming it by content:
+
+- a theme switch, or a font/zoom change, updates previews straight from the
+  cache with no LaTeX run — the others bake the colour and size into the image,
+  so they re-run LaTeX;
+- the cache is shared across front-ends and sessions, and the renderer takes a
+  bare string, so it works outside a `.tex` document (for example, math in an
+  agent's chat output).
+
+The cost is equation numbering. The AUCTeX-based packages compile a whole
+document, so `\ref` / `\eqref` and equation numbers come out right on their
+own; here each fragment is compiled alone, so numbering has to be rebuilt by
+the front-end and is not done yet. If you are editing a `.tex` file and want
+correct numbers today, AUCTeX preview-latex (with `preview-dvisvgm` for SVG) or
+`texfrag` is the better fit. If you want cheap recolouring and rescaling, or
+rendering in buffers that are not TeX documents, this library is.
+
 ## Requirements
 
 - Emacs 29.1+ with SVG image support.
