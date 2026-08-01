@@ -5,7 +5,7 @@
 ;; Author: Andrea Alberti <a.alberti82@gmail.com>
 ;; Maintainer: Andrea Alberti <a.alberti82@gmail.com>
 ;; URL: https://github.com/alberti42/latex-to-svg
-;; Version: 0.2.0
+;; Version: 0.2.1
 ;; Package-Requires: ((emacs "29.1"))
 ;; Keywords: tex, math, images
 
@@ -592,6 +592,29 @@ the buffer font at build time, so call within the target buffer."
               (when callback
                 (latex-to-svg--enqueue key latex callback))
               nil)))))))
+
+;;;###autoload
+(defun latex-to-svg-invalidate (latex)
+  "Forget any cached render of LATEX and force a recompile next time.
+
+Deletes LATEX's on-disk SVG (content-addressed) and drops every
+in-memory image built from it (all sizes / colors), so a subsequent
+`latex-to-svg' for LATEX recompiles from scratch.  Use this to recover
+from a stale or corrupt cached SVG — ordinarily the content hash makes
+that impossible, so this is an escape hatch, not part of the normal
+flow."
+  (let* ((key (latex-to-svg--cache-key latex))
+         (file (latex-to-svg--svg-file key))
+         (prefix (concat key "@"))
+         (stale nil))
+    (when (file-exists-p file)
+      (delete-file file))
+    (maphash (lambda (k _v)
+               (when (string-prefix-p prefix k)
+                 (push k stale)))
+             latex-to-svg--image-cache)
+    (dolist (k stale)
+      (remhash k latex-to-svg--image-cache))))
 
 (provide 'latex-to-svg)
 

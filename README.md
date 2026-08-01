@@ -66,6 +66,7 @@ Helpers a front-end typically needs for its refresh policy:
 | `latex-to-svg-display-scale` | the `:scale` mapping the equation to the buffer font |
 | `latex-to-svg-foreground-color` | current tint color (`#rrggbb`) |
 | `latex-to-svg-flush-metrics` | drop the pixels-per-point calibration after a display change |
+| `latex-to-svg-invalidate` | forget a cached render (delete its on-disk SVG + in-memory images) so the next call recompiles — an escape hatch for a stale/corrupt cache |
 
 ### Sketch of a front-end
 

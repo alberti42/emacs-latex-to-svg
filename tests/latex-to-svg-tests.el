@@ -285,6 +285,37 @@
                        (latex-to-svg--svg-file (latex-to-svg--cache-key doc)))))))
       (delete-directory latex-to-svg-cache-directory t))))
 
+;;;; Invalidate
+
+(ert-deftest latex-to-svg-invalidate-drops-disk-and-memory ()
+  ;; `latex-to-svg-invalidate' removes LATEX's on-disk SVG and every in-memory
+  ;; image built from it (any scale/color), leaving other entries intact.
+  (let ((latex-to-svg-cache-directory (make-temp-file "l2s-inv" t))
+        (latex-to-svg--image-cache (make-hash-table :test 'equal)))
+    (unwind-protect
+        (let* ((key (latex-to-svg--cache-key "$x$"))
+               (file (latex-to-svg--svg-file key)))
+          (with-temp-file file (insert "<svg/>"))
+          (puthash (concat key "@1.0@#000000") 'img-a latex-to-svg--image-cache)
+          (puthash (concat key "@2.0@#ffffff") 'img-b latex-to-svg--image-cache)
+          (puthash "otherkey@1.0@#000000" 'other latex-to-svg--image-cache)
+          (should (file-exists-p file))
+          (latex-to-svg-invalidate "$x$")
+          ;; On-disk SVG gone.
+          (should-not (file-exists-p file))
+          ;; Both images for this key dropped; the unrelated entry survives.
+          (should (= 1 (hash-table-count latex-to-svg--image-cache)))
+          (should (eq 'other (gethash "otherkey@1.0@#000000"
+                                      latex-to-svg--image-cache))))
+      (delete-directory latex-to-svg-cache-directory t))))
+
+(ert-deftest latex-to-svg-invalidate-tolerates-missing ()
+  ;; Invalidating something never rendered is a no-op, not an error.
+  (let ((latex-to-svg-cache-directory (make-temp-file "l2s-inv2" t)))
+    (unwind-protect
+        (should-not (latex-to-svg-invalidate "$never-rendered$"))
+      (delete-directory latex-to-svg-cache-directory t))))
+
 (provide 'latex-to-svg-tests)
 
 ;;; latex-to-svg-tests.el ends here
