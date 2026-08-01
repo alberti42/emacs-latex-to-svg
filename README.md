@@ -139,7 +139,19 @@ For an equation you *don't* want to track, do nothing extra: call `(latex-to-svg
 
 ## Customization
 
-`latex-to-svg-latex-program`, `-dvisvgm-program`, `-preamble`, `-appended-preamble`, `-cache-directory` (default `$XDG_CACHE_HOME/latex-to-svg/`), `-font-scale`, `-use-placeholder`, `-render-on-non-graphic`, `-svg-dpi` (points→pixels conversion for sizing; default 96, rarely needs changing), `-metadata-prefix` (nil = off; enable the `.eld` compile-metadata capture above), `-precompile` (default `t`; preamble precompilation, below).
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `latex-to-svg-latex-program` | `"latex"` | the `latex` binary |
+| `latex-to-svg-dvisvgm-program` | `"dvisvgm"` | the `dvisvgm` binary |
+| `latex-to-svg-preamble` | `standalone[varwidth]` + `amsmath`/`xcolor` | the document class and base packages |
+| `latex-to-svg-appended-preamble` | `""` | extra preamble lines (your macros, packages) appended to the base |
+| `latex-to-svg-cache-directory` | `$XDG_CACHE_HOME/latex-to-svg/` | where `<hash>.svg` / `.eld` / `.fmt` live |
+| `latex-to-svg-font-scale` | `1.0` | equation size relative to the buffer font (1.0 = match) |
+| `latex-to-svg-use-placeholder` | `nil` | force the raw-LaTeX placeholder instead of compiling |
+| `latex-to-svg-render-on-non-graphic` | `nil` | allow rendering on a non-graphical frame |
+| `latex-to-svg-svg-dpi` | `96.0` | points→pixels constant for sizing; rarely needs changing |
+| `latex-to-svg-metadata-prefix` | `nil` | `nil` = off; the `\typeout` prefix enabling `.eld` compile-metadata capture (above) |
+| `latex-to-svg-precompile` | `t` | preamble precompilation to a `.fmt` (below) |
 
 ### Preamble precompilation (`.fmt`)
 
