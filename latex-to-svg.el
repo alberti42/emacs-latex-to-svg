@@ -51,7 +51,12 @@
 ;;
 ;; Public entry point:
 ;;
-;;   (latex-to-svg LATEX &key inline callback)
+;;   (latex-to-svg LATEX &key callback)
+;;
+;; LATEX is placed *verbatim* in the document body, so the caller passes
+;; valid body LaTeX and decides inline vs display by the delimiters it uses
+;; (`$x$', `\(x\)', `\[x\]', `\begin{equation}...\end{equation}', ...).
+;; The engine is deliberately unaware of that distinction.
 ;;
 ;; Returns an image now when one can be produced synchronously (cache /
 ;; on-disk SVG / placeholder), else nil after scheduling an asynchronous
@@ -93,14 +98,18 @@ to the buffer font at display time."
   :group 'latex-to-svg)
 
 (defcustom latex-to-svg-preamble
-  "\\documentclass[border=2pt]{standalone}
+  "\\documentclass[varwidth,border=2pt]{standalone}
 \\usepackage{amsmath}
 \\usepackage{amssymb}
 \\usepackage{xcolor}"
   "LaTeX preamble (everything before `\\begin{document}') for equations.
 The `standalone' class crops the page tightly to the equation, so
-no `preview' package is required.  Equations are typeset as inline
-math (`\\displaystyle' for display style) inside the document body.
+no `preview' package is required.  The `varwidth' option is what lets
+the verbatim body use *display* math — `\\[...\\]' and display
+environments like `equation'/`align' — not just inline `$...$'
+\(plain `standalone' typesets its body as a single horizontal box and
+errors with \"Missing $ inserted\" on display math).  dvisvgm's
+`--exact-bbox' then crops to the actual ink.
 
 See also `latex-to-svg-appended-preamble' for adding extra packages
 without replacing this base."
@@ -263,19 +272,19 @@ Honours `latex-to-svg-cache-directory', else `$XDG_CACHE_HOME'
       (make-directory dir t))
     dir))
 
-(defun latex-to-svg--cache-key (latex &optional inline)
+(defun latex-to-svg--cache-key (latex)
   "Return a stable content cache key for LATEX.
 The preamble is folded in so changing it invalidates the cache.
-INLINE (text style vs display) is folded in too, since the same
-LATEX renders differently in each.  The key names the on-disk SVG,
-which is both font- AND color-independent (equations are compiled
-with dvisvgm `--currentcolor', then sized and tinted at display
-time), so neither size nor color is part of this key."
-  (secure-hash 'sha1 (format "%s\0%s%s%s"
+LATEX is the verbatim document body, so any change to it — including
+inline vs display delimiters or an injected `\setcounter' for
+equation numbering — changes the key on its own.  The key names the
+on-disk SVG, which is both font- AND color-independent (equations
+are compiled with dvisvgm `--currentcolor', then sized and tinted at
+display time), so neither size nor color is part of this key."
+  (secure-hash 'sha1 (format "%s\0%s%s"
                              latex
                              latex-to-svg-preamble
-                             latex-to-svg-appended-preamble
-                             (if inline "\0inline" ""))))
+                             latex-to-svg-appended-preamble)))
 
 (defun latex-to-svg--svg-file (key)
   "Return the cache SVG path for KEY."
@@ -459,9 +468,11 @@ emitted with a clickable link to it."
                                 'action (lambda (_) (find-file log-dst))
                                 'help-echo "Open LaTeX log"))))))))
 
-(defun latex-to-svg--compile (key latex &optional inline)
+(defun latex-to-svg--compile (key latex)
   "Asynchronously compile LATEX to the color-independent cache SVG for KEY.
 
+LATEX is placed verbatim in the document body (the caller supplies
+valid body LaTeX and chooses inline vs display via delimiters).
 Writes a standalone LaTeX document, runs `latex-to-svg-latex-program'
 then `latex-to-svg-dvisvgm-program' in a scratch directory, and on
 success caches the SVG and notifies every callback queued for KEY
@@ -474,9 +485,7 @@ No color is baked in: the equation's default ink is emitted as the
 literal `currentColor' (dvisvgm `--currentcolor'), so the SVG is
 color-independent and is tinted to the buffer foreground at display
 time (`latex-to-svg--load-svg-image').  A theme change therefore
-re-tints from cache without recompiling.
-
-INLINE non-nil typesets in text style; display style otherwise."
+re-tints from cache without recompiling."
   (let* ((dir (make-temp-file "latex-to-svg" t))
          (tex (expand-file-name "equation.tex" dir))
          (dvi (expand-file-name "equation.dvi" dir))
@@ -488,14 +497,12 @@ INLINE non-nil typesets in text style; display style otherwise."
                   ""
                 (concat latex-to-svg-appended-preamble "\n"))
               "\\begin{document}\n"
-              ;; Display math is typeset `\displaystyle' (full-size sums /
-              ;; fractions / integrals); inline is left in text style so it
-              ;; sits compactly within the surrounding line.  No `\color' —
+              ;; LATEX is inserted verbatim: it already carries its own math
+              ;; delimiters / environment (chosen by the front-end), which
+              ;; also decide inline vs display sizing.  No `\color' —
               ;; `--currentcolor' below turns the default (black) ink into
               ;; the `currentColor' token, tinted at display.
-              (format "$%s%s$\n"
-                      (if inline "" "\\displaystyle ")
-                      latex)
+              latex "\n"
               "\\end{document}\n"))
     ;; Compile at dvisvgm scale 1: the SVG is vector (glyphs are outline
     ;; paths via --no-fonts), so the scale doesn't affect quality, and the
@@ -533,26 +540,27 @@ INLINE non-nil typesets in text style; display style otherwise."
          (funcall cleanup)
          (signal (car err) (cdr err)))))))
 
-(defun latex-to-svg--enqueue (key latex inline callback)
+(defun latex-to-svg--enqueue (key latex callback)
   "Queue CALLBACK for KEY and start a compile if none is running.
 
-KEY identifies the equation; LATEX and INLINE are forwarded to
+KEY identifies the equation; LATEX is forwarded to
 `latex-to-svg--compile' for the render.  Multiple callbacks sharing
 KEY (the same equation requested more than once) are coalesced onto a
 single in-flight compile; all are notified when it finishes."
   (let ((pending (gethash key latex-to-svg--pending)))
     (puthash key (cons callback pending) latex-to-svg--pending)
     (unless pending
-      (latex-to-svg--compile key latex inline))))
+      (latex-to-svg--compile key latex))))
 
 ;;;; Public entry point
 
-(cl-defun latex-to-svg (latex &key inline callback)
+(cl-defun latex-to-svg (latex &key callback)
   "Return an SVG image for LATEX, or nil while it compiles.
 
-LATEX is the equation source with delimiters already stripped, e.g.
-\"E=mc^2\".  INLINE non-nil typesets in text style (for `\\(...\\)'
-inline math) rather than display style.
+LATEX is placed *verbatim* in the LaTeX document body, so it must be
+valid there: pass math with its delimiters (`$x$', `\\(x\\)', `\\[x\\]')
+or a full environment (`\\begin{equation}...\\end{equation}').  The
+delimiters also choose inline vs display sizing — the engine does not.
 
 Returns immediately with:
 
@@ -577,12 +585,12 @@ the buffer font at build time, so call within the target buffer."
           (not (latex-to-svg-tools-available-p)))
       (latex-to-svg--placeholder latex))
      (t
-      (let* ((key (latex-to-svg--cache-key latex inline))
+      (let* ((key (latex-to-svg--cache-key latex))
              (image (latex-to-svg--cached-image key)))
         (or image
             (progn
               (when callback
-                (latex-to-svg--enqueue key latex inline callback))
+                (latex-to-svg--enqueue key latex callback))
               nil)))))))
 
 (provide 'latex-to-svg)

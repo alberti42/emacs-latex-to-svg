@@ -35,15 +35,23 @@ the render:
 ## API
 
 ```elisp
-(latex-to-svg LATEX &key inline callback)
+(latex-to-svg LATEX &key callback)
 ```
+
+`LATEX` is placed **verbatim** in the LaTeX document body, so pass valid body
+LaTeX — math with its delimiters (`$x$`, `\(x\)`, `\[x\]`) or a full
+environment (`\begin{equation}…\end{equation}`). The delimiters also decide
+inline vs display sizing; the engine is deliberately unaware of that
+distinction (a front-end that has bare bodies wraps them itself). Equation
+numbering, if a front-end wants it, is just a `\setcounter{equation}{N}`
+prepended to the body — it folds into the content hash for free.
 
 Returns an image now when one can be produced synchronously (cache / on-disk
 SVG / placeholder), else `nil` after scheduling an asynchronous compile;
 `CALLBACK` (a zero-argument function) is invoked once the SVG is ready, so the
 caller can re-query (`latex-to-svg` again → now returns the image) and place
 it. Concurrent requests for the same equation are coalesced onto a single
-compile. `INLINE` non-nil typesets in text style rather than display style.
+compile.
 
 The image is tinted to the current buffer foreground and scaled to the buffer
 font at build time, so call it within the target buffer.
@@ -62,16 +70,15 @@ Helpers a front-end typically needs for its refresh policy:
 ### Sketch of a front-end
 
 ```elisp
-(defun my-place (buffer beg end latex &optional inline)
+(defun my-place (buffer beg end latex)   ; LATEX is valid body LaTeX
   (with-current-buffer buffer
-    (if-let ((img (latex-to-svg latex :inline inline)))
+    (if-let ((img (latex-to-svg latex)))
         (my-overlay buffer beg end img)          ; cached / placeholder
       (let ((s (copy-marker beg)) (e (copy-marker end)))
-        (latex-to-svg latex :inline inline
+        (latex-to-svg latex
           :callback (lambda ()
                       (with-current-buffer buffer
-                        (my-overlay buffer s e
-                                    (latex-to-svg latex :inline inline)))))))))
+                        (my-overlay buffer s e (latex-to-svg latex)))))))))
 ```
 
 ## Customization

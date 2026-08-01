@@ -45,14 +45,18 @@
     (let ((latex-to-svg-appended-preamble "\\usepackage{braket}"))
       (should-not (equal base (latex-to-svg--cache-key "E=mc^2"))))))
 
-(ert-deftest latex-to-svg-cache-key-distinguishes-inline ()
-  ;; Inline and display renders of the same source must not collide: the
-  ;; inline flag changes the key, while the default (display) key is
-  ;; unchanged from the no-flag form.
-  (should (equal (latex-to-svg--cache-key "x")
-                 (latex-to-svg--cache-key "x" nil)))
-  (should-not (equal (latex-to-svg--cache-key "x")
-                     (latex-to-svg--cache-key "x" t))))
+(ert-deftest latex-to-svg-cache-key-distinguishes-delimiters ()
+  ;; The engine renders LATEX verbatim, so inline vs display (different
+  ;; delimiters) are simply different strings and get distinct keys with no
+  ;; special-casing — a `$x$' image never collides with a `\[x\]' one.
+  (should-not (equal (latex-to-svg--cache-key "$x$")
+                     (latex-to-svg--cache-key "\\[x\\]")))
+  ;; And an injected \setcounter (equation numbering) folds in for free,
+  ;; since it is part of the verbatim body string.
+  (should-not
+   (equal (latex-to-svg--cache-key "\\begin{equation}x\\end{equation}")
+          (latex-to-svg--cache-key
+           "\\setcounter{equation}{2}\\begin{equation}x\\end{equation}"))))
 
 ;;;; Cache directory
 
@@ -255,6 +259,31 @@
       (should (= compiles 1))
       (should (= 2 (length (gethash (latex-to-svg--cache-key "E=mc^2")
                                     latex-to-svg--pending)))))))
+
+;;;; End-to-end (requires latex + dvisvgm; skipped otherwise)
+
+(ert-deftest latex-to-svg-compiles-verbatim-display-math ()
+  ;; Guards the `varwidth' invariant: the verbatim body must accept *display*
+  ;; math (`\[...\]', `equation', `align'), not just inline `$...$'.  Plain
+  ;; `standalone' errors with "Missing $ inserted" on display math, so a
+  ;; regression in `latex-to-svg-preamble' would fail these real compiles.
+  (skip-unless (latex-to-svg-tools-available-p))
+  (let ((latex-to-svg-cache-directory (make-temp-file "l2s-e2e" t)))
+    (unwind-protect
+        (cl-letf (((symbol-function 'latex-to-svg-available-p) (lambda () t)))
+          (dolist (doc '("$E=mc^2$"
+                         "\\[F=ma\\]"
+                         "\\begin{equation}\nx=1\n\\end{equation}"
+                         "\\begin{align}\na&=b\\\\\nc&=d\n\\end{align}"))
+            (let ((done 'pending))
+              (latex-to-svg doc :callback (lambda () (setq done t)))
+              (dotimes (_ 100)
+                (when (eq done 'pending)
+                  (accept-process-output nil 0.1)))
+              (should (eq done t))
+              (should (file-exists-p
+                       (latex-to-svg--svg-file (latex-to-svg--cache-key doc)))))))
+      (delete-directory latex-to-svg-cache-directory t))))
 
 (provide 'latex-to-svg-tests)
 
