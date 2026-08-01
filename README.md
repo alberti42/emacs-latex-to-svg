@@ -21,16 +21,16 @@ Because the on-disk cache is content-addressed, an equation that appears in both
 
 Several other Emacs packages preview LaTeX for the user; a few do, under the hood, the same string-to-image step this library does. How they relate:
 
-| Package | Renders with | Output | Tied to | Recolor / rescale from cache | Numbering |
-| --- | --- | --- | --- | --- | --- |
-| **latex-to-svg** (this) | `latex` + `dvisvgm` | SVG | nothing — any buffer, or a bare string | yes | not yet |
-| AUCTeX preview-latex (+ `preview-dvisvgm`) | `latex` + `preview.sty` | PNG (SVG with `preview-dvisvgm`) | AUCTeX, a `.tex` document | no — color and size are baked in | yes |
-| [`texfrag`](https://github.com/TobiasZawada/texfrag) | AUCTeX `preview.el` | PNG (SVG via `preview-dvisvgm`) | AUCTeX; works in many major modes | no | yes (per document) |
-| Org `org-latex-preview` (built-in) | `latex` + `dvipng`/`dvisvgm` | PNG or SVG | Org | no — regenerates on a theme change | no |
-| [tecosaur/karthink `org-latex-preview`](https://code.tecosaur.net/tec/org-mode) (new, WIP) | `latex` + `dvisvgm`, `.fmt` precompile | SVG | a patched Org branch — Org-only, not a standalone library | yes | yes |
-| [`org-latex-impatient`](https://github.com/yangsheng6810/org-latex-impatient) | MathJax (Node) | SVG in a child frame | Org | no | — (MathJax, not full LaTeX) |
-| [`org-xlatex`](https://github.com/ksqsf/org-xlatex) | MathJax / KaTeX | webkit in an xwidget | Org, xwidgets build | no | — |
-| [`latex-math-preview`](https://gitlab.com/latex-math-preview/latex-math-preview) | `latex` + `dvipng` | PNG | an interactive command | no | no |
+|Package                                                                         |Renders with                          |Output                          |Tied to                                                  |Recolor / rescale from cache      |Numbering                  |
+|--------------------------------------------------------------------------------|--------------------------------------|--------------------------------|---------------------------------------------------------|----------------------------------|---------------------------|
+|**latex-to-svg** (this)                                                         |`latex` + `dvisvgm`                   |SVG                             |nothing — any buffer, or a bare string                   |yes                               |not yet                    |
+|AUCTeX preview-latex (+ `preview-dvisvgm`)                                      |`latex` + `preview.sty`               |PNG (SVG with `preview-dvisvgm`)|AUCTeX, a `.tex` document                                |no — color and size are baked in  |yes                        |
+|[`texfrag`](https://github.com/TobiasZawada/texfrag)                            |AUCTeX `preview.el`                   |PNG (SVG via `preview-dvisvgm`) |AUCTeX; works in many major modes                        |no                                |yes (per document)         |
+|Org `org-latex-preview` (built-in)                                              |`latex` + `dvipng`/`dvisvgm`          |PNG or SVG                      |Org                                                      |no — regenerates on a theme change|no                         |
+|[tecosaur/karthink `org-latex-preview`                                          |`latex` + `dvisvgm`, `.fmt` precompile|SVG                             |a patched Org branch — Org-only, not a standalone library|yes                               |yes                        |
+|[`org-latex-impatient`](https://github.com/yangsheng6810/org-latex-impatient)   |MathJax (Node)                        |SVG in a child frame            |Org                                                      |no                                |— (MathJax, not full LaTeX)|
+|[`org-xlatex`](https://github.com/ksqsf/org-xlatex)                             |MathJax / KaTeX                       |webkit in an xwidget            |Org, xwidgets build                                      |no                                |—                          |
+|[`latex-math-preview`](https://gitlab.com/latex-math-preview/latex-math-preview)|`latex` + `dvipng`                    |PNG                             |an interactive command                                   |no                                |no                         |
 
 Two things set this library apart, both a consequence of compiling each equation on its own and naming it by content:
 
@@ -146,10 +146,7 @@ Every equation is its own tiny LaTeX document, so each compile re-reads the clas
 
 It is a pure optimization with a graceful fallback: when `mylatexformat.ltx` isn't on the TeX search path, or the dump fails, or a compile that used the format later fails, the engine transparently reverts to embedding the full preamble. A stale format after a TeX toolchain upgrade is detected (the LaTeX binary is newer than the `.fmt`) and rebuilt automatically; `M-x latex-to-svg-flush-format` is the manual escape hatch. Set `latex-to-svg-precompile` to `nil` to disable it entirely.
 
-The `%&`-loaded `.fmt` approach is borrowed from the next-generation
-[`org-latex-preview`](https://code.tecosaur.net/tec/org-mode.git) by Karthik
-Chikmagalur (karthink) and TEC (tecosaur), which pioneered it for fast Org math
-preview — credit to them for the technique.
+The `%&`-loaded `.fmt` approach is borrowed from the work of Karthik Chikmagalur (karthink) and TEC (tecosaur) on fast Org math preview. It started as karthink's proof-of-concept [`org-preview`](https://github.com/karthink/org-preview) (now archived); the `.fmt`-based `org-latex-preview` it grew into lives in a [fork of Org mode](https://code.tecosaur.net/tec/org-mode.git) and is not part of upstream Org.
 
 Preview size is derived deterministically from the buffer font height and `-svg-dpi` (SVG `pt` = dpi/72 px). Earlier versions measured this per-frame with `image-size`, which proved unreliable on some ports (returning wildly different pixel sizes for the same undisplayed SVG) and made preview sizes non-deterministic — that measurement was removed in 0.2.2.
 
