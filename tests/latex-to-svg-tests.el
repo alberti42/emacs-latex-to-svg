@@ -140,6 +140,24 @@
              (latex-to-svg-font-scale 2.0))
         (should (equal (latex-to-svg-display-scale) (* 2 base)))))))
 
+(ert-deftest latex-to-svg-display-scale-rescale-by-multiplies ()
+  ;; RESCALE-BY is a per-call multiplier on top of the global font-scale, so
+  ;; a front-end can size display equations larger than inline without
+  ;; touching the base.  Off a graphic frame it still scales the 1.0 default.
+  (cl-letf (((symbol-function 'latex-to-svg--graphic-frame)
+             (lambda () (selected-frame)))
+            ((symbol-function 'default-font-height) (lambda (&rest _) 28)))
+    (let ((latex-to-svg-svg-dpi 144.0)      ; dpi/72 = 2.0
+          (latex-to-svg-font-scale 1.0))
+      (let ((base (latex-to-svg-display-scale)))
+        (should (equal (latex-to-svg-display-scale 1.0) base))
+        (should (< (abs (- (latex-to-svg-display-scale 1.5) (* 1.5 base)))
+                   1e-9)))))
+  ;; Headless (no graphic frame): returns RESCALE-BY itself, not a bare 1.0.
+  (cl-letf (((symbol-function 'latex-to-svg--graphic-frame) (lambda () nil)))
+    (should (equal (latex-to-svg-display-scale) 1.0))
+    (should (equal (latex-to-svg-display-scale 1.3) 1.3))))
+
 (ert-deftest latex-to-svg-flush-metrics-is-noop ()
   ;; Kept for API compatibility; deterministic sizing means it does nothing.
   (should-not (latex-to-svg-flush-metrics)))
@@ -206,10 +224,10 @@
                      (lambda (_key) tmp)))
             (let (img1 img2)
               (cl-letf (((symbol-function 'latex-to-svg-display-scale)
-                         (lambda () 0.8)))
+                         (lambda (&rest _) 0.8)))
                 (setq img1 (latex-to-svg--cached-image "K")))
               (cl-letf (((symbol-function 'latex-to-svg-display-scale)
-                         (lambda () 1.5)))
+                         (lambda (&rest _) 1.5)))
                 (setq img2 (latex-to-svg--cached-image "K")))
               (should img1)
               (should img2)
@@ -217,7 +235,7 @@
               (should (= 2 (hash-table-count latex-to-svg--image-cache)))
               ;; The first is still served from cache (warm, not evicted).
               (cl-letf (((symbol-function 'latex-to-svg-display-scale)
-                         (lambda () 0.8)))
+                         (lambda (&rest _) 0.8)))
                 (should (eq img1 (latex-to-svg--cached-image "K"))))
               ;; Each image carries its own scale.
               (should (equal (image-property img1 :scale) 0.8))
@@ -248,7 +266,7 @@
         (compiles 0))
     (cl-letf (((symbol-function 'latex-to-svg-available-p) (lambda () t))
               ((symbol-function 'latex-to-svg-tools-available-p) (lambda () t))
-              ((symbol-function 'latex-to-svg--cached-image) (lambda (_key) nil))
+              ((symbol-function 'latex-to-svg--cached-image) (lambda (&rest _) nil))
               ((symbol-function 'latex-to-svg--compile)
                (lambda (&rest _) (cl-incf compiles))))
       (should-not (latex-to-svg "E=mc^2" :callback #'ignore))

@@ -5,7 +5,7 @@
 ;; Author: Andrea Alberti <a.alberti82@gmail.com>
 ;; Maintainer: Andrea Alberti <a.alberti82@gmail.com>
 ;; URL: https://github.com/alberti42/emacs-latex-to-svg
-;; Version: 0.3.0
+;; Version: 0.3.1
 ;; Package-Requires: ((emacs "29.1"))
 ;; Keywords: tex, math, images
 
@@ -340,7 +340,7 @@ A constant derived from `latex-to-svg-svg-dpi' (SVG `pt' = dpi/72 px).
 Not measured — see `latex-to-svg-svg-dpi' for why."
   (/ latex-to-svg-svg-dpi 72.0))
 
-(defun latex-to-svg-display-scale ()
+(defun latex-to-svg-display-scale (&optional rescale-by)
   "Return the `create-image' :scale that sizes equations to the buffer font.
 
 Maps the LaTeX document's 10pt body font (the `standalone' default,
@@ -350,13 +350,19 @@ equation's displayed font height is (10 * px-per-pt * scale) px, so
 scale = target * font-scale / (10 * px-per-pt), where px-per-pt is the
 deterministic `latex-to-svg-svg-dpi' / 72.
 
+RESCALE-BY (default 1.0) is a per-call multiplier on top of the global
+`latex-to-svg-font-scale'; a front-end uses it to size, say, display
+equations slightly larger than inline ones, without touching the
+global base.
+
 The font height is read against a graphical frame (see
 `latex-to-svg--graphic-frame') with the current buffer kept current, so
 it honours a buffer-local text scale and does not collapse to 1.0 when
-an async render fires while a TTY frame is selected.  Returns 1.0 only
-when no graphical frame exists (truly headless), leaving the image at
-its natural size."
+an async render fires while a TTY frame is selected.  Returns RESCALE-BY
+(scaled from 1.0) when no graphical frame exists (truly headless),
+leaving the image at its natural size."
   (let* ((buf (current-buffer))
+         (rescale-by (or rescale-by 1.0))
          (frame (latex-to-svg--graphic-frame))
          (target (and frame
                       (ignore-errors
@@ -364,9 +370,9 @@ its natural size."
                           (with-current-buffer buf
                             (default-font-height)))))))
     (if target
-        (/ (* target latex-to-svg-font-scale)
+        (/ (* target latex-to-svg-font-scale rescale-by)
            (* 10.0 (latex-to-svg--svg-px-per-pt)))
-      1.0)))
+      rescale-by)))
 
 (defun latex-to-svg-flush-metrics ()
   "Deprecated no-op, kept for API compatibility.
@@ -404,16 +410,19 @@ coexist, so a font or theme change just creates a new entry — no
 cache clearing, and a sibling buffer's warm images survive."
   (format "%s@%s@%s" key scale color))
 
-(defun latex-to-svg--cached-image (key)
+(defun latex-to-svg--cached-image (key &optional rescale-by)
   "Return the rendered image for content KEY at the current font and color.
 Checks the in-memory cache (keyed by KEY, the display scale, and the
 buffer foreground via `latex-to-svg--image-cache-key', so each size /
 color has its own image), else loads KEY's on-disk SVG and caches a
-freshly scaled, tinted image.  Returns nil when the SVG isn't on disk
-yet (its compile hasn't finished).  Reads the scale and color from
-the current buffer / frame, so call it within the target buffer to
-honour a buffer-local text scale."
-  (let* ((scale (latex-to-svg-display-scale))
+freshly scaled, tinted image.  RESCALE-BY (default 1.0) multiplies the
+display scale (see `latex-to-svg-display-scale') and, via the scale,
+feeds the cache key, so different per-call sizes of the same equation
+coexist.  Returns nil when the SVG isn't on disk yet (its compile
+hasn't finished).  Reads the scale and color from the current buffer /
+frame, so call it within the target buffer to honour a buffer-local
+text scale."
+  (let* ((scale (latex-to-svg-display-scale rescale-by))
          (color (car (latex-to-svg--current-colors)))
          (image-key (latex-to-svg--image-cache-key key scale color)))
     (or (gethash image-key latex-to-svg--image-cache)
@@ -626,13 +635,21 @@ compile; all are notified when it finishes."
 
 ;;;; Public entry point
 
-(cl-defun latex-to-svg (latex &key callback metadata)
+(cl-defun latex-to-svg (latex &key callback metadata rescale-by)
   "Return an SVG image for LATEX, or nil while it compiles.
 
 METADATA, when non-nil and `latex-to-svg-metadata-prefix' is set, is the
 INITIAL value stored in this equation's `.eld' sidecar (see
 `latex-to-svg-metadata'); the FINAL value is captured from the compile
 log.  It is only recorded when a compile actually runs (a miss).
+
+RESCALE-BY (default 1.0) multiplies the base display size for this one
+call, on top of the global `latex-to-svg-font-scale'.  The engine has no
+inline/display awareness; a front-end that wants display equations a
+touch larger than inline passes, say, `:rescale-by 1.1' for display and
+nothing for inline.  It is a display-time scale only — same on-disk SVG,
+no recompile — and folds into the in-memory image cache key, so the two
+sizes coexist.
 
 LATEX is placed *verbatim* in the LaTeX document body, so it must be
 valid there: pass math with its delimiters (`$x$', `\\(x\\)', `\\[x\\]')
@@ -663,7 +680,7 @@ the buffer font at build time, so call within the target buffer."
       (latex-to-svg--placeholder latex))
      (t
       (let* ((key (latex-to-svg--cache-key latex))
-             (image (latex-to-svg--cached-image key)))
+             (image (latex-to-svg--cached-image key rescale-by)))
         (or image
             (progn
               (when callback
