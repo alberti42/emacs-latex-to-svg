@@ -14,7 +14,7 @@ Equations are compiled once and then recolored and rescaled **without recompilin
 
 `latex-to-svg-backend` is a library, not a preview command: it turns one LaTeX string into one image and leaves *finding* equations and *placing* images to a front-end. Two front-ends are built on it today:
 
-- [**`org-latex-to-svg`**](https://github.com/alberti42/org-latex-to-svg) — previews Org-mode LaTeX math as SVG. It finds `latex-fragment` and `latex-environment` elements with `org-element` and overlays each with an SVG typeset here; because the engine renders its input verbatim, it passes each element's `:value` as-is, so inline vs display sizing follows from the delimiters. A drop-in replacement for built-in `org-latex-preview` that adds recolor-on-theme-switch and rescale-on-zoom straight from cache.
+- [**`latex-to-svg`**](https://github.com/alberti42/latex-to-svg) — previews LaTeX math in **Org and Markdown** buffers (and other markups) as SVG. A shared front-end core (`latex-to-svg-frontend`) plus thin per-mode adaptors detect math with a blank-line-bounded scanner and overlay each occurrence with an SVG typeset here; because the engine renders its input verbatim, sizing follows from the delimiters. A drop-in replacement for built-in `org-latex-preview` that adds recolor-on-theme-switch and rescale-on-zoom straight from cache.
 - [**`agent-shell-math-renderer`**](https://github.com/alberti42/agent-shell-math-renderer) — renders LaTeX math in [`agent-shell`](https://github.com/xenodium/agent-shell)'s streamed markdown output. Display and inline math in an agent's response are shown as theme-matched SVGs while the original LaTeX stays in the buffer, so copy and save round-trip renderable source. This library was extracted from it.
 
 Because the on-disk cache is content-addressed, an equation that appears in both an Org buffer and an agent's chat compiles only once, shared across both.
@@ -32,11 +32,11 @@ Several other Emacs packages preview LaTeX for the user; a few do, under the hoo
 | [`org-xlatex`](https://github.com/ksqsf/org-xlatex) | MathJax/KaTeX → xwidget | Org + xwidgets | no | no | no | no |
 | [`latex-math-preview`](https://gitlab.com/latex-math-preview/latex-math-preview) | `latex`+`dvipng` → PNG | interactive command | no | no | no | no |
 
-¹ via the [`org-latex-to-svg`](https://github.com/alberti42/org-latex-to-svg) front-end (the engine supplies the numbering metadata; the front-end assigns numbers and resolves `\ref` / `\eqref`). ² SVG output requires `preview-dvisvgm`.
+¹ via the [`latex-to-svg`](https://github.com/alberti42/latex-to-svg) front-end (the engine supplies the numbering metadata; the front-end assigns numbers and resolves `\ref` / `\eqref`). ² SVG output requires `preview-dvisvgm`.
 
 What sets this stack apart is that it pulls together strengths that used to live in separate tools:
 
-- **Numbered equations + working `\ref` / `\eqref`** — the AUCTeX-based packages get these by compiling a whole `.tex`; here the [`org-latex-to-svg`](https://github.com/alberti42/org-latex-to-svg) front-end assigns each block's numbers (folded in as a `\setcounter`) and reads the true counter back through the engine's compile-metadata sidecar, so every fragment still compiles alone.
+- **Numbered equations + working `\ref` / `\eqref`** — the AUCTeX-based packages get these by compiling a whole `.tex`; here the [`latex-to-svg`](https://github.com/alberti42/latex-to-svg) front-end assigns each block's numbers (folded in as a `\setcounter`) and reads the true counter back through the engine's compile-metadata sidecar, so every fragment still compiles alone.
 - **Recolour + rescale from cache** — a theme switch, or a font/zoom change, updates previews with no LaTeX run; the others bake the colour and size into the image and must re-run LaTeX.
 - **Fast builds** — `.fmt` preamble precompilation (see [Preamble precompilation](#preamble-precompilation-fmt)).
 - **A shared, bare-string cache** — content-addressed and shared across front-ends and sessions, and the renderer takes a bare string, so it works outside a `.tex` document (for example, math in an agent's chat output).
@@ -45,7 +45,7 @@ The last two fall out of compiling each equation on its own and naming it by con
 
 The closest relative is the in-progress next-generation `org-latex-preview` by tecosaur and karthink: it also caches a color-independent (`currentColor`) SVG that re-tints from cache on a theme change, and pioneered the `.fmt` preamble precompilation this library adopts (see [Preamble precompilation](#preamble-precompilation-fmt)). The difference is packaging — it ships as part of a patched Org branch and is Org-only, while `latex-to-svg-backend` is a standalone library any front-end (or a bare string, in any buffer) can call.
 
-Equation numbering used to be the gap: the AUCTeX-based packages compile a whole document, so `\ref` / `\eqref` and equation numbers come out right on their own, whereas here each fragment is compiled alone. The [`org-latex-to-svg`](https://github.com/alberti42/org-latex-to-svg) front-end closes it — it scans the buffer to assign each block's numbers (folded into the fragment as a `\setcounter`), reads the true final counter back through the engine's compile-metadata sidecar, and renders `\ref` / `\eqref` as the resolved number with click-to-jump. To our knowledge, this is the only stack that combines numbered equations **and** working `\ref` / `\eqref` links **and** `.fmt` precompilation **and** recolour/rescale from cache: the tecosaur/karthink fork has `.fmt` and cache-recolour but only partial numbering and no full cross-references, while the AUCTeX packages have numbering and references but no `.fmt` and no cache-recolour.
+Equation numbering used to be the gap: the AUCTeX-based packages compile a whole document, so `\ref` / `\eqref` and equation numbers come out right on their own, whereas here each fragment is compiled alone. The [`latex-to-svg`](https://github.com/alberti42/latex-to-svg) front-end closes it — it scans the buffer to assign each block's numbers (folded into the fragment as a `\setcounter`), reads the true final counter back through the engine's compile-metadata sidecar, and renders `\ref` / `\eqref` as the resolved number with click-to-jump. To our knowledge, this is the only stack that combines numbered equations **and** working `\ref` / `\eqref` links **and** `.fmt` precompilation **and** recolour/rescale from cache: the tecosaur/karthink fork has `.fmt` and cache-recolour but only partial numbering and no full cross-references, while the AUCTeX packages have numbering and references but no `.fmt` and no cache-recolour.
 
 ## Requirements
 
@@ -55,7 +55,7 @@ Equation numbering used to be the gap: the AUCTeX-based packages compile a whole
 
 ## Installation
 
-The package (feature) is `latex-to-svg-backend`; the repository is **`alberti42/latex-to-svg-backend`**. It is not on MELPA yet, so install straight from the repository. This is a *library* — you normally install it as a dependency of a front-end (e.g.  [`org-latex-to-svg`](https://github.com/alberti42/org-latex-to-svg) or `agent-shell-math-renderer`), declaring it *before* the front-end.
+The package (feature) is `latex-to-svg-backend`; the repository is **`alberti42/latex-to-svg-backend`**. It is not on MELPA yet, so install straight from the repository. This is a *library* — you normally install it as a dependency of a front-end (e.g. the [`latex-to-svg`](https://github.com/alberti42/latex-to-svg) preview stack or `agent-shell-math-renderer`), declaring it *before* the front-end.
 
 ```elisp
 ;; use-package + :vc (Emacs 30+)
