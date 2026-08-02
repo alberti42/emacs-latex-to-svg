@@ -153,10 +153,10 @@ and rebuilt automatically (the binary is newer than the `.fmt');
 
 (defcustom latex-to-svg-backend-cache-directory nil
   "Directory for cached equation SVGs and scratch compiles.
-When nil, `$XDG_CACHE_HOME/latex-to-svg-backend/' (or `~/.cache/latex-to-svg-backend/')
-is used, so equation SVGs persist across sessions and each unique
-equation compiles at most once ever.  Because the cache is
-content-addressed and color/size-independent, it is safe to share
+When nil, `$XDG_CACHE_HOME/latex-to-svg-backend/' (or
+`~/.cache/latex-to-svg-backend/') is used, so equation SVGs persist across
+sessions and each unique equation compiles at most once ever.  Because the
+cache is content-addressed and color/size-independent, it is safe to share
 across every front-end and buffer."
   :type '(choice (const :tag "Default XDG cache" nil) directory)
   :group 'latex-to-svg-backend)
@@ -192,8 +192,8 @@ buffer font across themes, faces, and text scale."
 (defcustom latex-to-svg-backend-use-placeholder nil
   "When non-nil, draw the placeholder panel instead of typesetting LaTeX.
 Also used as the automatic fallback when the toolchain
-\(`latex-to-svg-backend-latex-program' / `latex-to-svg-backend-dvisvgm-program') is
-unavailable."
+\(`latex-to-svg-backend-latex-program' /
+`latex-to-svg-backend-dvisvgm-program') is unavailable."
   :type 'boolean
   :safe #'booleanp
   :group 'latex-to-svg-backend)
@@ -570,8 +570,8 @@ findable via `kpsewhich'."
 (defun latex-to-svg-backend--build-format (fkey)
   "Dump the preamble to a precompiled format file for FKEY, synchronously.
 Return the `.fmt' path on success, nil on failure.  Writes the preamble
-followed by `\\endofdump' to a scratch `.tex' in the cache directory and
-runs `latex-to-svg-backend-latex-program' in `-ini' mode with `mylatexformat.ltx'
+followed by `\\endofdump' to a scratch `.tex' in the cache directory and runs
+`latex-to-svg-backend-latex-program' in `-ini' mode with `mylatexformat.ltx'
 to dump `<cache>/FKEY.fmt'.  The build log is left in the
 `*latex-to-svg-backend-precompile*' buffer for inspection."
   (let* ((dir (latex-to-svg-backend--cache-dir))
@@ -926,8 +926,8 @@ rarely needed."
 Returns the plist `(:v 1 :nums (INITIAL . FINAL))' read from LATEX's
 `.eld' sidecar: INITIAL is the caller's `:metadata' at render time and
 FINAL is the first integer the compile emitted on a
-`latex-to-svg-backend-metadata-prefix' line.  Available on cache hit or miss once
-LATEX has compiled at least once with the prefix set; nil otherwise (a
+`latex-to-svg-backend-metadata-prefix' line.  Available on cache hit or miss
+once LATEX has compiled at least once with the prefix set; nil otherwise (a
 corrupt or half-written sidecar also yields nil)."
   (let ((file (latex-to-svg-backend--meta-file (latex-to-svg-backend--cache-key latex))))
     (when (file-readable-p file)
