@@ -1,10 +1,10 @@
-;;; latex-to-svg.el --- Content-addressed LaTeX-to-SVG image rendering -*- lexical-binding: t -*-
+;;; latex-to-svg-backend.el --- Content-addressed LaTeX-to-SVG image rendering -*- lexical-binding: t -*-
 
 ;; Copyright (C) 2026 Andrea Alberti
 
 ;; Author: Andrea Alberti <a.alberti82@gmail.com>
 ;; Maintainer: Andrea Alberti <a.alberti82@gmail.com>
-;; URL: https://github.com/alberti42/emacs-latex-to-svg
+;; URL: https://github.com/alberti42/latex-to-svg-backend
 ;; Version: 0.4.0
 ;; Package-Requires: ((emacs "29.1"))
 ;; Keywords: tex, math, images
@@ -51,14 +51,14 @@
 ;;
 ;;   * The preamble is PRECOMPILED once to a LaTeX format file (`.fmt') via
 ;;     the `mylatexformat' package, then loaded by every equation compile
-;;     with a `%&' first line (see `latex-to-svg-precompile').  This skips
+;;     with a `%&' first line (see `latex-to-svg-backend-precompile').  This skips
 ;;     re-parsing the class and packages (amsmath, ...) on each equation, so
 ;;     compiles are markedly faster.  It falls back to a full compile when
 ;;     `mylatexformat' is unavailable or the dump fails.
 ;;
 ;; Public entry point:
 ;;
-;;   (latex-to-svg LATEX &key callback)
+;;   (latex-to-svg-backend LATEX &key callback)
 ;;
 ;; LATEX is placed *verbatim* in the document body, so the caller passes
 ;; valid body LaTeX and decides inline vs display by the delimiters it uses
@@ -72,8 +72,8 @@
 ;; requests for the same equation are coalesced onto a single compile.
 ;;
 ;; Helpers a front-end typically needs for its refresh policy:
-;; `latex-to-svg-available-p', `latex-to-svg-appearance',
-;; `latex-to-svg-display-scale', and `latex-to-svg-foreground-color'.
+;; `latex-to-svg-backend-available-p', `latex-to-svg-backend-appearance',
+;; `latex-to-svg-backend-display-scale', and `latex-to-svg-backend-foreground-color'.
 
 ;;; Code:
 
@@ -83,27 +83,27 @@
 (require 'seq)
 (require 'svg)
 
-(defgroup latex-to-svg nil
+(defgroup latex-to-svg-backend nil
   "Render LaTeX math to SVG images with `latex' + `dvisvgm'.
 Equations are compiled to a color- and size-independent SVG, cached
 on disk by content, then tinted to the buffer foreground and scaled
 to the buffer font at display time."
   :group 'tex
-  :prefix "latex-to-svg-")
+  :prefix "latex-to-svg-backend-")
 
 ;;;; Customization
 
-(defcustom latex-to-svg-latex-program "latex"
+(defcustom latex-to-svg-backend-latex-program "latex"
   "Program that compiles a LaTeX document to DVI."
   :type 'string
-  :group 'latex-to-svg)
+  :group 'latex-to-svg-backend)
 
-(defcustom latex-to-svg-dvisvgm-program "dvisvgm"
+(defcustom latex-to-svg-backend-dvisvgm-program "dvisvgm"
   "Program that converts DVI to SVG."
   :type 'string
-  :group 'latex-to-svg)
+  :group 'latex-to-svg-backend)
 
-(defcustom latex-to-svg-preamble
+(defcustom latex-to-svg-backend-preamble
   "\\documentclass[varwidth,border=2pt]{standalone}
 \\usepackage{amsmath}
 \\usepackage{amssymb}
@@ -117,25 +117,25 @@ environments like `equation'/`align' — not just inline `$...$'
 errors with \"Missing $ inserted\" on display math).  dvisvgm's
 `--exact-bbox' then crops to the actual ink.
 
-See also `latex-to-svg-appended-preamble' for adding extra packages
+See also `latex-to-svg-backend-appended-preamble' for adding extra packages
 without replacing this base."
   :type 'string
-  :group 'latex-to-svg)
+  :group 'latex-to-svg-backend)
 
-(defcustom latex-to-svg-appended-preamble ""
-  "Extra LaTeX code appended after `latex-to-svg-preamble'.
+(defcustom latex-to-svg-backend-appended-preamble ""
+  "Extra LaTeX code appended after `latex-to-svg-backend-preamble'.
 Use this to load additional packages (e.g. `\\usepackage{braket}',
 `\\usepackage{physics}') without replacing the base preamble.  The
 value is folded into the cache key, so changing it automatically
 invalidates cached SVGs."
   :type 'string
-  :group 'latex-to-svg)
+  :group 'latex-to-svg-backend)
 
-(defcustom latex-to-svg-precompile t
+(defcustom latex-to-svg-backend-precompile t
   "When non-nil, precompile the preamble to a LaTeX format (`.fmt') file.
 
-The class and packages in `latex-to-svg-preamble' /
-`latex-to-svg-appended-preamble' are dumped once, with the
+The class and packages in `latex-to-svg-backend-preamble' /
+`latex-to-svg-backend-appended-preamble' are dumped once, with the
 `mylatexformat' package, to a format file keyed by the preamble text;
 every equation compile then loads it with a `%&' first line instead of
 re-reading the preamble, which speeds each compile up noticeably.
@@ -146,37 +146,37 @@ using the format later fails, the engine transparently falls back to
 embedding the full preamble in each equation — correctness never depends
 on this option.  A stale format after a TeX toolchain upgrade is detected
 and rebuilt automatically (the binary is newer than the `.fmt');
-`latex-to-svg-flush-format' is the manual escape hatch."
+`latex-to-svg-backend-flush-format' is the manual escape hatch."
   :type 'boolean
   :safe #'booleanp
-  :group 'latex-to-svg)
+  :group 'latex-to-svg-backend)
 
-(defcustom latex-to-svg-cache-directory nil
+(defcustom latex-to-svg-backend-cache-directory nil
   "Directory for cached equation SVGs and scratch compiles.
-When nil, `$XDG_CACHE_HOME/latex-to-svg/' (or `~/.cache/latex-to-svg/')
+When nil, `$XDG_CACHE_HOME/latex-to-svg-backend/' (or `~/.cache/latex-to-svg-backend/')
 is used, so equation SVGs persist across sessions and each unique
 equation compiles at most once ever.  Because the cache is
 content-addressed and color/size-independent, it is safe to share
 across every front-end and buffer."
   :type '(choice (const :tag "Default XDG cache" nil) directory)
-  :group 'latex-to-svg)
+  :group 'latex-to-svg-backend)
 
-(defcustom latex-to-svg-metadata-prefix nil
+(defcustom latex-to-svg-backend-metadata-prefix nil
   "Line prefix marking compile metadata to capture, or nil to disable.
 When a string, after each successful compile the first integer on a LaTeX
 log line beginning with it (the FINAL value) is paired with the caller's
 `:metadata' value (the INITIAL value) and stored as the cons
 `(:v 1 :nums (INITIAL . FINAL))' in the equation's `.eld' sidecar next to
-its SVG, exposed by `latex-to-svg-metadata' (on cache hit or miss).
+its SVG, exposed by `latex-to-svg-backend-metadata' (on cache hit or miss).
 
 So the caller supplies INITIAL directly (a value it already knows, in
 Elisp), and only FINAL — the thing the compile computes — travels through
 LaTeX, emitted with `\\typeout{PREFIX \\arabic{COUNTER}}'.  Keep that line
 short: TeX wraps log lines near column 80."
   :type '(choice (const :tag "Disabled" nil) string)
-  :group 'latex-to-svg)
+  :group 'latex-to-svg-backend)
 
-(defcustom latex-to-svg-font-scale 1.0
+(defcustom latex-to-svg-backend-font-scale 1.0
   "Size of rendered equations relative to the buffer font.
 
 Equation images are scaled so LaTeX's 10pt body font maps onto the
@@ -187,18 +187,18 @@ recomputed from the current font on each render, equations track the
 buffer font across themes, faces, and text scale."
   :type 'number
   :safe #'numberp
-  :group 'latex-to-svg)
+  :group 'latex-to-svg-backend)
 
-(defcustom latex-to-svg-use-placeholder nil
+(defcustom latex-to-svg-backend-use-placeholder nil
   "When non-nil, draw the placeholder panel instead of typesetting LaTeX.
 Also used as the automatic fallback when the toolchain
-\(`latex-to-svg-latex-program' / `latex-to-svg-dvisvgm-program') is
+\(`latex-to-svg-backend-latex-program' / `latex-to-svg-backend-dvisvgm-program') is
 unavailable."
   :type 'boolean
   :safe #'booleanp
-  :group 'latex-to-svg)
+  :group 'latex-to-svg-backend)
 
-(defcustom latex-to-svg-render-on-non-graphic nil
+(defcustom latex-to-svg-backend-render-on-non-graphic nil
   "When non-nil, render equation images even on a non-graphical frame.
 
 By default equations are only compiled when the selected frame is
@@ -214,13 +214,13 @@ the buffer.  The trade-off is that a purely terminal session then
 spawns LaTeX compiles whose images it never displays."
   :type 'boolean
   :safe #'booleanp
-  :group 'latex-to-svg)
+  :group 'latex-to-svg-backend)
 
-(defcustom latex-to-svg-svg-dpi 96.0
+(defcustom latex-to-svg-backend-svg-dpi 96.0
   "Dots-per-inch Emacs's SVG renderer uses to convert points to pixels.
 
 Used to size equation previews to the buffer font: an SVG `pt' is
-rendered as `latex-to-svg-svg-dpi' / 72 pixels.  librsvg (Emacs's SVG
+rendered as `latex-to-svg-backend-svg-dpi' / 72 pixels.  librsvg (Emacs's SVG
 backend) converts SVG length units at 96 DPI, so the default suits
 almost all systems; override only if previews come out uniformly too
 big or too small.  HiDPI is handled separately by `image-scaling-factor'
@@ -232,42 +232,42 @@ unreliable on some ports (returning wildly different pixel sizes for
 the same undisplayed SVG), which made preview sizing non-deterministic."
   :type 'number
   :safe #'numberp
-  :group 'latex-to-svg)
+  :group 'latex-to-svg-backend)
 
 ;;;; State
 
 ;; image-cache key = content key (sha1 of latex + preamble + style) plus the
-;; display scale and tint color, via `latex-to-svg--image-cache-key'.  Folding
+;; display scale and tint color, via `latex-to-svg-backend--image-cache-key'.  Folding
 ;; scale and color in lets images at different font sizes / themes coexist, so
 ;; a font or theme change just adds an entry (no cache clear) and sibling
 ;; buffers' warm images survive.  The underlying SVG is still compiled at most
 ;; once per content key (the disk cache is font- AND color-independent); only
 ;; the cheap `create-image' is per scale/color.
-(defvar latex-to-svg--image-cache (make-hash-table :test 'equal)
+(defvar latex-to-svg-backend--image-cache (make-hash-table :test 'equal)
   "In-memory map of image-cache key to rendered equation image.")
 
 ;; key -> list of zero-argument callbacks awaiting one in-flight compile.
 ;; Dedupes concurrent compiles of the same equation and records every
 ;; consumer to notify once the SVG is ready.
-(defvar latex-to-svg--pending (make-hash-table :test 'equal)
+(defvar latex-to-svg-backend--pending (make-hash-table :test 'equal)
   "In-memory map of cache key to callbacks awaiting an in-flight compile.")
 
 ;; Precompiled-preamble (.fmt) bookkeeping, keyed by format key (a hash of
-;; the preamble text + LaTeX program, see `latex-to-svg--format-key').
+;; the preamble text + LaTeX program, see `latex-to-svg-backend--format-key').
 ;; `--format-checked' records keys whose `.fmt' was verified fresh this
 ;; session, so the freshness (mtime) check runs at most once per key;
 ;; `--format-blocklist' records keys whose format produced a compile
 ;; failure, so precompilation is abandoned for them for the rest of the
 ;; session and the engine falls back to full compiles.
-(defvar latex-to-svg--format-checked (make-hash-table :test 'equal)
+(defvar latex-to-svg-backend--format-checked (make-hash-table :test 'equal)
   "Format keys whose `.fmt' has been verified fresh this session.")
 
-(defvar latex-to-svg--format-blocklist (make-hash-table :test 'equal)
+(defvar latex-to-svg-backend--format-blocklist (make-hash-table :test 'equal)
   "Format keys whose `.fmt' failed a compile; precompilation skipped for them.")
 
 ;;;; Colors and appearance
 
-(defun latex-to-svg--svg-color (face attribute fallback)
+(defun latex-to-svg-backend--svg-color (face attribute fallback)
   "Return FACE's ATTRIBUTE color as a `#rrggbb' string, or FALLBACK.
 
 ATTRIBUTE is `:foreground' or `:background'.  FALLBACK is returned
@@ -282,70 +282,70 @@ when the attribute is unspecified or can't be resolved to RGB
         (apply #'color-rgb-to-hex (append rgb '(2)))
       fallback)))
 
-(defun latex-to-svg-foreground-color ()
+(defun latex-to-svg-backend-foreground-color ()
   "Return the `#rrggbb' foreground equations should be tinted with now.
 Resolved from the `default' face of the selected frame."
-  (latex-to-svg--svg-color 'default :foreground "#000000"))
+  (latex-to-svg-backend--svg-color 'default :foreground "#000000"))
 
-(defun latex-to-svg--current-colors ()
+(defun latex-to-svg-backend--current-colors ()
   "Return the (FOREGROUND . BACKGROUND) equations should render for now.
 Both are `#rrggbb' strings resolved from the `default' face."
-  (cons (latex-to-svg-foreground-color)
-        (latex-to-svg--svg-color 'default :background "#ffffff")))
+  (cons (latex-to-svg-backend-foreground-color)
+        (latex-to-svg-backend--svg-color 'default :background "#ffffff")))
 
-(defun latex-to-svg-appearance ()
+(defun latex-to-svg-backend-appearance ()
   "Return the appearance signature equations should render for now.
 A list (FOREGROUND BACKGROUND FONT-HEIGHT): the colors equations
-are tinted with (see `latex-to-svg--current-colors') and the buffer
+are tinted with (see `latex-to-svg-backend--current-colors') and the buffer
 font pixel height they are sized to (nil off a graphical frame).
 Front-ends compare this against the value stored at their last
 render to detect a color *or* font-size change and refresh."
-  (let ((colors (latex-to-svg--current-colors)))
+  (let ((colors (latex-to-svg-backend--current-colors)))
     (list (car colors) (cdr colors)
           (and (display-graphic-p) (ignore-errors (default-font-height))))))
 
 ;;;; Capability
 
-(defun latex-to-svg-available-p ()
+(defun latex-to-svg-backend-available-p ()
   "Return non-nil when equation images should be produced.
 
 Requires SVG image support in this Emacs build, plus either a
-graphical selected frame or `latex-to-svg-render-on-non-graphic'
+graphical selected frame or `latex-to-svg-backend-render-on-non-graphic'
 \(the daemon / mixed TTY+GUI case — the image is ignored on a TTY
 frame but shows once a graphical frame views the buffer)."
   (and (image-type-available-p 'svg)
        (or (display-graphic-p)
-           latex-to-svg-render-on-non-graphic)))
+           latex-to-svg-backend-render-on-non-graphic)))
 
-(defun latex-to-svg-tools-available-p ()
+(defun latex-to-svg-backend-tools-available-p ()
   "Return non-nil when the LaTeX-to-SVG toolchain is on the variable `exec-path'."
-  (and (executable-find latex-to-svg-latex-program)
-       (executable-find latex-to-svg-dvisvgm-program)))
+  (and (executable-find latex-to-svg-backend-latex-program)
+       (executable-find latex-to-svg-backend-dvisvgm-program)))
 
 ;;;; Cache addressing
 
-(defun latex-to-svg--cache-dir ()
+(defun latex-to-svg-backend--cache-dir ()
   "Return the equation cache directory, creating it if needed.
-Honours `latex-to-svg-cache-directory', else `$XDG_CACHE_HOME'
-\(or `~/.cache') under `latex-to-svg/'."
-  (let ((dir (or latex-to-svg-cache-directory
+Honours `latex-to-svg-backend-cache-directory', else `$XDG_CACHE_HOME'
+\(or `~/.cache') under `latex-to-svg-backend/'."
+  (let ((dir (or latex-to-svg-backend-cache-directory
                  (expand-file-name
-                  "latex-to-svg/"
+                  "latex-to-svg-backend/"
                   (or (getenv "XDG_CACHE_HOME")
                       (expand-file-name "~/.cache"))))))
     (unless (file-directory-p dir)
       (make-directory dir t))
     dir))
 
-(defun latex-to-svg--preamble ()
+(defun latex-to-svg-backend--preamble ()
   "Return the full LaTeX preamble: the base plus any appended packages.
 This is the exact text embedded before `\\begin{document}' in a full
 compile, and the text dumped into the precompiled format file."
-  (if (string-empty-p latex-to-svg-appended-preamble)
-      latex-to-svg-preamble
-    (concat latex-to-svg-preamble "\n" latex-to-svg-appended-preamble)))
+  (if (string-empty-p latex-to-svg-backend-appended-preamble)
+      latex-to-svg-backend-preamble
+    (concat latex-to-svg-backend-preamble "\n" latex-to-svg-backend-appended-preamble)))
 
-(defun latex-to-svg--cache-key (latex)
+(defun latex-to-svg-backend--cache-key (latex)
   "Return a stable content cache key for LATEX.
 The preamble is folded in so changing it invalidates the cache.
 LATEX is the verbatim document body, so any change to it — including
@@ -356,22 +356,22 @@ are compiled with dvisvgm `--currentcolor', then sized and tinted at
 display time), so neither size nor color is part of this key."
   (secure-hash 'sha1 (format "%s\0%s%s"
                              latex
-                             latex-to-svg-preamble
-                             latex-to-svg-appended-preamble)))
+                             latex-to-svg-backend-preamble
+                             latex-to-svg-backend-appended-preamble)))
 
-(defun latex-to-svg--svg-file (key)
+(defun latex-to-svg-backend--svg-file (key)
   "Return the cache SVG path for KEY."
   (expand-file-name (concat key ".svg")
-                    (latex-to-svg--cache-dir)))
+                    (latex-to-svg-backend--cache-dir)))
 
-(defun latex-to-svg--meta-file (key)
+(defun latex-to-svg-backend--meta-file (key)
   "Return the compile-metadata sidecar path for KEY (a `.eld' next to the SVG)."
   (expand-file-name (concat key ".eld")
-                    (latex-to-svg--cache-dir)))
+                    (latex-to-svg-backend--cache-dir)))
 
 ;;;; Scale
 
-(defun latex-to-svg--graphic-frame ()
+(defun latex-to-svg-backend--graphic-frame ()
   "Return a graphical frame to measure font metrics against, or nil.
 Prefer the selected frame when it is graphical; otherwise any graphical
 frame (so a render triggered while a TTY/daemon frame is selected — e.g.
@@ -381,55 +381,55 @@ collapsing to the fallback scale)."
       (selected-frame)
     (seq-find #'display-graphic-p (frame-list))))
 
-(defun latex-to-svg--svg-px-per-pt ()
+(defun latex-to-svg-backend--svg-px-per-pt ()
   "Return how many pixels Emacs renders one SVG point as.
-A constant derived from `latex-to-svg-svg-dpi' (SVG `pt' = dpi/72 px).
-Not measured — see `latex-to-svg-svg-dpi' for why."
-  (/ latex-to-svg-svg-dpi 72.0))
+A constant derived from `latex-to-svg-backend-svg-dpi' (SVG `pt' = dpi/72 px).
+Not measured — see `latex-to-svg-backend-svg-dpi' for why."
+  (/ latex-to-svg-backend-svg-dpi 72.0))
 
-(defun latex-to-svg-display-scale (&optional rescale-by)
+(defun latex-to-svg-backend-display-scale (&optional rescale-by)
   "Return the `create-image' :scale that sizes equations to the buffer font.
 
 Maps the LaTeX document's 10pt body font (the `standalone' default,
 compiled at dvisvgm scale 1, so 10pt of LaTeX = 10 SVG points) onto
-the buffer's font pixel height, times `latex-to-svg-font-scale'.  An
+the buffer's font pixel height, times `latex-to-svg-backend-font-scale'.  An
 equation's displayed font height is (10 * px-per-pt * scale) px, so
 scale = target * font-scale / (10 * px-per-pt), where px-per-pt is the
-deterministic `latex-to-svg-svg-dpi' / 72.
+deterministic `latex-to-svg-backend-svg-dpi' / 72.
 
 RESCALE-BY (default 1.0) is a per-call multiplier on top of the global
-`latex-to-svg-font-scale'; a front-end uses it to size, say, display
+`latex-to-svg-backend-font-scale'; a front-end uses it to size, say, display
 equations slightly larger than inline ones, without touching the
 global base.
 
 The font height is read against a graphical frame (see
-`latex-to-svg--graphic-frame') with the current buffer kept current, so
+`latex-to-svg-backend--graphic-frame') with the current buffer kept current, so
 it honours a buffer-local text scale and does not collapse to 1.0 when
 an async render fires while a TTY frame is selected.  Returns RESCALE-BY
 (scaled from 1.0) when no graphical frame exists (truly headless),
 leaving the image at its natural size."
   (let* ((buf (current-buffer))
          (rescale-by (or rescale-by 1.0))
-         (frame (latex-to-svg--graphic-frame))
+         (frame (latex-to-svg-backend--graphic-frame))
          (target (and frame
                       (ignore-errors
                         (with-selected-frame frame
                           (with-current-buffer buf
                             (default-font-height)))))))
     (if target
-        (/ (* target latex-to-svg-font-scale rescale-by)
-           (* 10.0 (latex-to-svg--svg-px-per-pt)))
+        (/ (* target latex-to-svg-backend-font-scale rescale-by)
+           (* 10.0 (latex-to-svg-backend--svg-px-per-pt)))
       rescale-by)))
 
 ;;;; Image build
 
-(defun latex-to-svg--load-svg-image (file &optional scale color)
+(defun latex-to-svg-backend--load-svg-image (file &optional scale color)
   "Return an SVG image from FILE, tinted COLOR and sized to the buffer font.
 The on-disk SVG emits its default ink as the literal token
 `currentColor' (dvisvgm `--currentcolor'); when COLOR (a `#rrggbb'
 string) is given it is substituted in, so the equation matches the
 buffer foreground without recompiling.  Scaled by SCALE (default
-`latex-to-svg-display-scale') so the body font matches the
+`latex-to-svg-backend-display-scale') so the body font matches the
 surrounding text, and centred vertically for inline display."
   (let ((data (with-temp-buffer
                 (insert-file-contents file)
@@ -437,10 +437,10 @@ surrounding text, and centred vertically for inline display."
     (when color
       (setq data (replace-regexp-in-string "currentColor" color data t t)))
     (create-image data 'svg t
-                  :scale (or scale (latex-to-svg-display-scale))
+                  :scale (or scale (latex-to-svg-backend-display-scale))
                   :ascent 'center)))
 
-(defun latex-to-svg--image-cache-key (key scale color)
+(defun latex-to-svg-backend--image-cache-key (key scale color)
   "Return the in-memory image-cache key for content KEY at SCALE and COLOR.
 KEY names the font- and color-independent on-disk SVG; the cached
 image object bakes in a display `:scale' and a tint COLOR, so the
@@ -449,42 +449,42 @@ coexist, so a font or theme change just creates a new entry — no
 cache clearing, and a sibling buffer's warm images survive."
   (format "%s@%s@%s" key scale color))
 
-(defun latex-to-svg--cached-image (key &optional rescale-by)
+(defun latex-to-svg-backend--cached-image (key &optional rescale-by)
   "Return the rendered image for content KEY at the current font and color.
 Checks the in-memory cache (keyed by KEY, the display scale, and the
-buffer foreground via `latex-to-svg--image-cache-key', so each size /
+buffer foreground via `latex-to-svg-backend--image-cache-key', so each size /
 color has its own image), else loads KEY's on-disk SVG and caches a
 freshly scaled, tinted image.  RESCALE-BY (default 1.0) multiplies the
-display scale (see `latex-to-svg-display-scale') and, via the scale,
+display scale (see `latex-to-svg-backend-display-scale') and, via the scale,
 feeds the cache key, so different per-call sizes of the same equation
 coexist.  Returns nil when the SVG isn't on disk yet (its compile
 hasn't finished).  Reads the scale and color from the current buffer /
 frame, so call it within the target buffer to honour a buffer-local
 text scale."
-  (let* ((scale (latex-to-svg-display-scale rescale-by))
-         (color (car (latex-to-svg--current-colors)))
-         (image-key (latex-to-svg--image-cache-key key scale color)))
-    (or (gethash image-key latex-to-svg--image-cache)
-        (let ((file (latex-to-svg--svg-file key)))
+  (let* ((scale (latex-to-svg-backend-display-scale rescale-by))
+         (color (car (latex-to-svg-backend--current-colors)))
+         (image-key (latex-to-svg-backend--image-cache-key key scale color)))
+    (or (gethash image-key latex-to-svg-backend--image-cache)
+        (let ((file (latex-to-svg-backend--svg-file key)))
           (when (file-exists-p file)
             (puthash image-key
-                     (latex-to-svg--load-svg-image file scale color)
-                     latex-to-svg--image-cache))))))
+                     (latex-to-svg-backend--load-svg-image file scale color)
+                     latex-to-svg-backend--image-cache))))))
 
 ;;;; Placeholder
 
-(defun latex-to-svg--placeholder (latex)
+(defun latex-to-svg-backend--placeholder (latex)
   "Return a placeholder SVG image boxing the raw LATEX, or nil.
 
 This does NOT typeset LATEX — it draws the source inside a bordered
-panel.  Used when `latex-to-svg-use-placeholder' is set or the
+panel.  Used when `latex-to-svg-backend-use-placeholder' is set or the
 toolchain is unavailable, so math still has a visible (if un-typeset)
 rendering.  Returns nil when equations aren't renderable (see
-`latex-to-svg-available-p'), so callers fall back to the raw text.
+`latex-to-svg-backend-available-p'), so callers fall back to the raw text.
 
 LATEX is the equation source with the surrounding delimiters
 already stripped, e.g. \"E=mc^2\"."
-  (when (latex-to-svg-available-p)
+  (when (latex-to-svg-backend-available-p)
     (let* ((lines (split-string latex "\n"))
            ;; `frame-char-width' / `-height' give per-char pixel
            ;; dimensions on a graphical frame and stay robust off it
@@ -498,9 +498,9 @@ already stripped, e.g. \"E=mc^2\"."
            (text-w (* char-w (apply #'max 1 (mapcar #'length lines))))
            (width (+ text-w (* 2 pad)))
            (height (+ badge-h (* char-h (length lines)) (* 2 pad)))
-           (fg (latex-to-svg--svg-color 'default :foreground "#000000"))
-           (border (latex-to-svg--svg-color 'shadow :foreground "#888888"))
-           (panel (latex-to-svg--svg-color 'default :background "#f4f4f4"))
+           (fg (latex-to-svg-backend--svg-color 'default :foreground "#000000"))
+           (border (latex-to-svg-backend--svg-color 'shadow :foreground "#888888"))
+           (panel (latex-to-svg-backend--svg-color 'default :background "#f4f4f4"))
            (svg (svg-create width height)))
       (svg-rectangle svg 0 0 width height
                      :rx (/ char-h 2)
@@ -533,33 +533,33 @@ already stripped, e.g. \"E=mc^2\"."
 ;; falls back to embedding the full preamble in each equation, so a `.fmt' is
 ;; a pure performance optimization, never a correctness dependency.
 
-(defun latex-to-svg--latex-binary ()
+(defun latex-to-svg-backend--latex-binary ()
   "Return the path to the LaTeX executable, or nil.
-Honours an absolute `latex-to-svg-latex-program', else resolves the
+Honours an absolute `latex-to-svg-backend-latex-program', else resolves the
 command name on `exec-path'.  Used for the format freshness check."
-  (let ((prog (car (split-string latex-to-svg-latex-program))))
+  (let ((prog (car (split-string latex-to-svg-backend-latex-program))))
     (if (file-name-absolute-p prog)
         (and (file-executable-p prog) prog)
       (executable-find prog))))
 
-(defun latex-to-svg--latex-format-name ()
+(defun latex-to-svg-backend--latex-format-name ()
   "Return the base LaTeX format to preload when dumping (e.g. \"latex\").
 The `&NAME' the `-ini' dump reads before `mylatexformat.ltx'."
-  (file-name-nondirectory (car (split-string latex-to-svg-latex-program))))
+  (file-name-nondirectory (car (split-string latex-to-svg-backend-latex-program))))
 
-(defun latex-to-svg--format-key ()
+(defun latex-to-svg-backend--format-key ()
   "Return the cache key naming the precompiled preamble format file.
 Folds in the full preamble and the LaTeX program, so any change to
 either yields a distinct `.fmt' (and a rebuild on the next render)."
   (secure-hash 'sha1 (format "%s\0%s"
-                             (latex-to-svg--preamble)
-                             latex-to-svg-latex-program)))
+                             (latex-to-svg-backend--preamble)
+                             latex-to-svg-backend-latex-program)))
 
-(defun latex-to-svg--format-file (fkey)
+(defun latex-to-svg-backend--format-file (fkey)
   "Return the precompiled format file path (`.fmt') for FKEY."
-  (expand-file-name (concat fkey ".fmt") (latex-to-svg--cache-dir)))
+  (expand-file-name (concat fkey ".fmt") (latex-to-svg-backend--cache-dir)))
 
-(defun latex-to-svg--precompile-available-p ()
+(defun latex-to-svg-backend--precompile-available-p ()
   "Return non-nil when the preamble can be dumped to a `.fmt'.
 Requires the `mylatexformat' package: `mylatexformat.ltx' must be
 findable via `kpsewhich'."
@@ -567,29 +567,29 @@ findable via `kpsewhich'."
        (eql 0 (ignore-errors
                 (call-process "kpsewhich" nil nil nil "mylatexformat.ltx")))))
 
-(defun latex-to-svg--build-format (fkey)
+(defun latex-to-svg-backend--build-format (fkey)
   "Dump the preamble to a precompiled format file for FKEY, synchronously.
 Return the `.fmt' path on success, nil on failure.  Writes the preamble
 followed by `\\endofdump' to a scratch `.tex' in the cache directory and
-runs `latex-to-svg-latex-program' in `-ini' mode with `mylatexformat.ltx'
+runs `latex-to-svg-backend-latex-program' in `-ini' mode with `mylatexformat.ltx'
 to dump `<cache>/FKEY.fmt'.  The build log is left in the
-`*latex-to-svg-precompile*' buffer for inspection."
-  (let* ((dir (latex-to-svg--cache-dir))
+`*latex-to-svg-backend-precompile*' buffer for inspection."
+  (let* ((dir (latex-to-svg-backend--cache-dir))
          (base (expand-file-name fkey dir))
          (fmt (concat base ".fmt"))
          (pre-tex (concat base ".tex"))
          (log (concat base ".log"))
-         (buffer (get-buffer-create "*latex-to-svg-precompile*")))
+         (buffer (get-buffer-create "*latex-to-svg-backend-precompile*")))
     (with-current-buffer buffer (erase-buffer))
     (with-temp-file pre-tex
-      (insert (latex-to-svg--preamble) "\n\\endofdump\n"))
-    (message "latex-to-svg: precompiling LaTeX preamble...")
+      (insert (latex-to-svg-backend--preamble) "\n\\endofdump\n"))
+    (message "latex-to-svg-backend: precompiling LaTeX preamble...")
     (let ((rv (ignore-errors
-                (call-process latex-to-svg-latex-program nil buffer nil
+                (call-process latex-to-svg-backend-latex-program nil buffer nil
                               (concat "-output-directory=" dir)
                               "-ini"
                               (concat "-jobname=" fkey)
-                              (concat "&" (latex-to-svg--latex-format-name))
+                              (concat "&" (latex-to-svg-backend--latex-format-name))
                               "mylatexformat.ltx" pre-tex))))
       (ignore-errors (delete-file pre-tex))
       (if (and (eql rv 0) (file-exists-p fmt))
@@ -597,7 +597,7 @@ to dump `<cache>/FKEY.fmt'.  The build log is left in the
         (ignore-errors (delete-file fmt))
         nil))))
 
-(defun latex-to-svg--ensure-format ()
+(defun latex-to-svg-backend--ensure-format ()
   "Return a fresh precompiled preamble format file path, or nil.
 Builds the `.fmt' on first use (synchronously, once per session per
 preamble) and caches it on disk.  Rebuilds it when the LaTeX binary is
@@ -606,30 +606,30 @@ otherwise fail every compile with a format-version mismatch).  Returns
 nil — so the caller uses a full compile — when precompilation is off,
 `mylatexformat' is unavailable, the dump fails, or the format has been
 blocklisted after an earlier failure."
-  (when latex-to-svg-precompile
-    (let ((fkey (latex-to-svg--format-key)))
-      (unless (gethash fkey latex-to-svg--format-blocklist)
-        (let ((fmt (latex-to-svg--format-file fkey))
-              (latex-bin (latex-to-svg--latex-binary)))
+  (when latex-to-svg-backend-precompile
+    (let ((fkey (latex-to-svg-backend--format-key)))
+      (unless (gethash fkey latex-to-svg-backend--format-blocklist)
+        (let ((fmt (latex-to-svg-backend--format-file fkey))
+              (latex-bin (latex-to-svg-backend--latex-binary)))
           (cond
            ;; Verified fresh already this session.
-           ((and (gethash fkey latex-to-svg--format-checked)
+           ((and (gethash fkey latex-to-svg-backend--format-checked)
                  (file-exists-p fmt))
             fmt)
            ;; On disk and newer than the engine binary -> trust it.
            ((and (file-exists-p fmt)
                  (or (null latex-bin)
                      (file-newer-than-file-p fmt latex-bin)))
-            (puthash fkey t latex-to-svg--format-checked)
+            (puthash fkey t latex-to-svg-backend--format-checked)
             fmt)
            ;; Missing or stale -> (re)build, if mylatexformat is available.
-           ((latex-to-svg--precompile-available-p)
+           ((latex-to-svg-backend--precompile-available-p)
             (when (file-exists-p fmt) (ignore-errors (delete-file fmt)))
-            (when-let* ((built (latex-to-svg--build-format fkey)))
-              (puthash fkey t latex-to-svg--format-checked)
+            (when-let* ((built (latex-to-svg-backend--build-format fkey)))
+              (puthash fkey t latex-to-svg-backend--format-checked)
               built))))))))
 
-(defun latex-to-svg--block-format (format-file)
+(defun latex-to-svg-backend--block-format (format-file)
   "Abandon FORMAT-FILE after a compile that used it failed.
 Deletes the `.fmt' and blocklists its key so precompilation is skipped
 for this preamble for the rest of the session (the engine falls back to
@@ -637,29 +637,29 @@ full compiles).  Warns once.  Called only when the same equation is
 about to be retried with the full inline preamble, so a genuinely broken
 equation is not mistaken for a broken format."
   (let ((fkey (file-name-base format-file)))
-    (puthash fkey t latex-to-svg--format-blocklist)
-    (remhash fkey latex-to-svg--format-checked)
+    (puthash fkey t latex-to-svg-backend--format-blocklist)
+    (remhash fkey latex-to-svg-backend--format-checked)
     (ignore-errors (delete-file format-file))
     (display-warning
-     'latex-to-svg
+     'latex-to-svg-backend
      "Precompiled LaTeX preamble failed; falling back to full compiles."
      :warning)))
 
 ;;;; Async compile
 
-(defun latex-to-svg--compile-failed (key latex dir)
+(defun latex-to-svg-backend--compile-failed (key latex dir)
   "Handle a failed LaTeX compile for KEY with source LATEX.
 DIR is the scratch directory containing the build log.  The log is
 copied to a persistent file in the cache directory, and a warning is
 emitted with a clickable link to it."
   (let* ((log-src (expand-file-name "equation.log" dir))
          (log-dst (expand-file-name (concat key ".log")
-                                    (latex-to-svg--cache-dir)))
+                                    (latex-to-svg-backend--cache-dir)))
          (snippet (truncate-string-to-width latex 60 nil nil t)))
     (when (file-exists-p log-src)
       (copy-file log-src log-dst t))
     (display-warning
-     'latex-to-svg
+     'latex-to-svg-backend
      (format "LaTeX compile failed for: %s\nSee log: %s"
              snippet
              (if (file-exists-p log-dst) log-dst "(no log available)"))
@@ -674,15 +674,15 @@ emitted with a clickable link to it."
                                 'action (lambda (_) (find-file log-dst))
                                 'help-echo "Open LaTeX log"))))))))
 
-(defun latex-to-svg--write-metadata (key dir initial)
+(defun latex-to-svg-backend--write-metadata (key dir initial)
   "Write KEY's `.eld' sidecar pairing INITIAL with the compile's FINAL.
 Scans the just-finished compile's `equation.log' in scratch DIR for the
-first integer on a line beginning with `latex-to-svg-metadata-prefix'
+first integer on a line beginning with `latex-to-svg-backend-metadata-prefix'
 \(FINAL), and writes `(:v 1 :nums (INITIAL . FINAL))' to `<KEY>.eld'.
-INITIAL is the caller's value (from `latex-to-svg's `:metadata'), stored
+INITIAL is the caller's value (from `latex-to-svg-backend's `:metadata'), stored
 verbatim.  Writes nothing when the prefix is nil or no FINAL was found.
 Called on a successful compile, before DIR is cleaned up."
-  (when latex-to-svg-metadata-prefix
+  (when latex-to-svg-backend-metadata-prefix
     (let ((log (expand-file-name "equation.log" dir))
           (final nil))
       (when (file-readable-p log)
@@ -692,50 +692,50 @@ Called on a successful compile, before DIR is cleaned up."
           (while (and (not final) (not (eobp)))
             (let ((line (buffer-substring-no-properties
                          (line-beginning-position) (line-end-position))))
-              (when (string-prefix-p latex-to-svg-metadata-prefix line)
-                (let ((rest (substring line (length latex-to-svg-metadata-prefix))))
+              (when (string-prefix-p latex-to-svg-backend-metadata-prefix line)
+                (let ((rest (substring line (length latex-to-svg-backend-metadata-prefix))))
                   (when (string-match "-?[0-9]+" rest)
                     (setq final (string-to-number (match-string 0 rest)))))))
             (forward-line 1))))
       (when final
         (ignore-errors
-          (with-temp-file (latex-to-svg--meta-file key)
+          (with-temp-file (latex-to-svg-backend--meta-file key)
             (prin1 (list :v 1 :nums (cons initial final)) (current-buffer))))))))
 
-(defun latex-to-svg--compile (key latex &optional metadata no-format)
+(defun latex-to-svg-backend--compile (key latex &optional metadata no-format)
   "Asynchronously compile LATEX to the color-independent cache SVG for KEY.
 METADATA, when non-nil, is stored as the INITIAL value in KEY's `.eld'
 sidecar alongside the FINAL captured from the log (see
-`latex-to-svg--write-metadata').
+`latex-to-svg-backend--write-metadata').
 
 LATEX is placed verbatim in the document body (the caller supplies
 valid body LaTeX and chooses inline vs display via delimiters).
-Writes a standalone LaTeX document, runs `latex-to-svg-latex-program'
-then `latex-to-svg-dvisvgm-program' in a scratch directory, and on
+Writes a standalone LaTeX document, runs `latex-to-svg-backend-latex-program'
+then `latex-to-svg-backend-dvisvgm-program' in a scratch directory, and on
 success caches the SVG and notifies every callback queued for KEY
-\(see `latex-to-svg--enqueue').  The scratch directory is removed when
+\(see `latex-to-svg-backend--enqueue').  The scratch directory is removed when
 the process exits.
 
 The preamble is loaded from a precompiled format file (`.fmt') when one
-is available (see `latex-to-svg-precompile'), via a `%&' first line;
+is available (see `latex-to-svg-backend-precompile'), via a `%&' first line;
 otherwise the full preamble is embedded in the document.  On failure,
 if a format was used it may be the culprit: the format is abandoned (see
-`latex-to-svg--block-format') and the same equation is retried once with
+`latex-to-svg-backend--block-format') and the same equation is retried once with
 the full inline preamble.  Only when a full-preamble compile fails is
-the log saved and a warning emitted (see `latex-to-svg--compile-failed')
+the log saved and a warning emitted (see `latex-to-svg-backend--compile-failed')
 and queued callbacks dropped.  NO-FORMAT forces that inline path (it is
 set on the retry).
 
 No color is baked in: the equation's default ink is emitted as the
 literal `currentColor' (dvisvgm `--currentcolor'), so the SVG is
 color-independent and is tinted to the buffer foreground at display
-time (`latex-to-svg--load-svg-image').  A theme change therefore
+time (`latex-to-svg-backend--load-svg-image').  A theme change therefore
 re-tints from cache without recompiling."
-  (let* ((dir (make-temp-file "latex-to-svg" t))
+  (let* ((dir (make-temp-file "latex-to-svg-backend" t))
          (tex (expand-file-name "equation.tex" dir))
          (dvi (expand-file-name "equation.dvi" dir))
-         (svg (latex-to-svg--svg-file key))
-         (format-file (and (not no-format) (latex-to-svg--ensure-format)))
+         (svg (latex-to-svg-backend--svg-file key))
+         (format-file (and (not no-format) (latex-to-svg-backend--ensure-format)))
          (cleanup (lambda () (ignore-errors (delete-directory dir t)))))
     (with-temp-file tex
       (if format-file
@@ -747,7 +747,7 @@ re-tints from cache without recompiling."
                   "\\begin{document}\n"
                   latex "\n"
                   "\\end{document}\n")
-        (insert (latex-to-svg--preamble) "\n"
+        (insert (latex-to-svg-backend--preamble) "\n"
                 "\\begin{document}\n"
                 ;; LATEX is inserted verbatim: it already carries its own math
                 ;; delimiters / environment (chosen by the front-end), which
@@ -758,21 +758,21 @@ re-tints from cache without recompiling."
                 "\\end{document}\n")))
     ;; Compile at dvisvgm scale 1: the SVG is vector (glyphs are outline
     ;; paths via --no-fonts), so the scale doesn't affect quality, and the
-    ;; displayed size is set later by `latex-to-svg-display-scale'.  Fixing
+    ;; displayed size is set later by `latex-to-svg-backend-display-scale'.  Fixing
     ;; it at 1 means the SVG carries the equation's natural point dimensions.
     ;; `--currentcolor' rewrites the default ink to the `currentColor' token
     ;; so the file is color-independent (tinted at display time).
     (let ((command
            (format "cd %s && %s -interaction=nonstopmode -halt-on-error %s && %s --no-fonts --exact-bbox --currentcolor --scale=1 -o %s %s"
                    (shell-quote-argument dir)
-                   (shell-quote-argument latex-to-svg-latex-program)
+                   (shell-quote-argument latex-to-svg-backend-latex-program)
                    (shell-quote-argument tex)
-                   (shell-quote-argument latex-to-svg-dvisvgm-program)
+                   (shell-quote-argument latex-to-svg-backend-dvisvgm-program)
                    (shell-quote-argument svg)
                    (shell-quote-argument dvi))))
       (condition-case err
           (set-process-sentinel
-           (start-process-shell-command "latex-to-svg" nil command)
+           (start-process-shell-command "latex-to-svg-backend" nil command)
            (lambda (process _event)
              (when (memq (process-status process) '(exit signal))
                (cond
@@ -781,13 +781,13 @@ re-tints from cache without recompiling."
                       (zerop (process-exit-status process))
                       (file-exists-p svg))
                  ;; Capture compile metadata before DIR is cleaned up.
-                 (latex-to-svg--write-metadata key dir metadata)
-                 (dolist (cb (gethash key latex-to-svg--pending))
+                 (latex-to-svg-backend--write-metadata key dir metadata)
+                 (dolist (cb (gethash key latex-to-svg-backend--pending))
                    (condition-case cb-err
                        (funcall cb)
                      (error
-                      (message "latex-to-svg: callback error: %S" cb-err))))
-                 (remhash key latex-to-svg--pending)
+                      (message "latex-to-svg-backend: callback error: %S" cb-err))))
+                 (remhash key latex-to-svg-backend--pending)
                  (funcall cleanup))
                 ;; Failure while using a precompiled format: the format may
                 ;; be at fault (e.g. a package that misbehaves when dumped).
@@ -795,44 +795,44 @@ re-tints from cache without recompiling."
                 ;; inline preamble — the retry keeps the same pending queue.
                 (format-file
                  (funcall cleanup)
-                 (latex-to-svg--block-format format-file)
-                 (latex-to-svg--compile key latex metadata t))
+                 (latex-to-svg-backend--block-format format-file)
+                 (latex-to-svg-backend--compile key latex metadata t))
                 ;; Genuine failure (full preamble): report and drop the queue.
                 (t
-                 (latex-to-svg--compile-failed key latex dir)
-                 (remhash key latex-to-svg--pending)
+                 (latex-to-svg-backend--compile-failed key latex dir)
+                 (remhash key latex-to-svg-backend--pending)
                  (funcall cleanup))))))
         (error
          ;; Couldn't even spawn the process — drop the queue and clean up.
-         (remhash key latex-to-svg--pending)
+         (remhash key latex-to-svg-backend--pending)
          (funcall cleanup)
          (signal (car err) (cdr err)))))))
 
-(defun latex-to-svg--enqueue (key latex callback &optional metadata)
+(defun latex-to-svg-backend--enqueue (key latex callback &optional metadata)
   "Queue CALLBACK for KEY and start a compile if none is running.
 
 KEY identifies the equation; LATEX is forwarded to
-`latex-to-svg--compile' for the render, along with METADATA (the INITIAL
+`latex-to-svg-backend--compile' for the render, along with METADATA (the INITIAL
 value for the `.eld' sidecar).  Multiple callbacks sharing KEY (the same
 equation requested more than once) are coalesced onto a single in-flight
 compile; all are notified when it finishes."
-  (let ((pending (gethash key latex-to-svg--pending)))
-    (puthash key (cons callback pending) latex-to-svg--pending)
+  (let ((pending (gethash key latex-to-svg-backend--pending)))
+    (puthash key (cons callback pending) latex-to-svg-backend--pending)
     (unless pending
-      (latex-to-svg--compile key latex metadata))))
+      (latex-to-svg-backend--compile key latex metadata))))
 
 ;;;; Public entry point
 
-(cl-defun latex-to-svg (latex &key callback metadata rescale-by)
+(cl-defun latex-to-svg-backend (latex &key callback metadata rescale-by)
   "Return an SVG image for LATEX, or nil while it compiles.
 
-METADATA, when non-nil and `latex-to-svg-metadata-prefix' is set, is the
+METADATA, when non-nil and `latex-to-svg-backend-metadata-prefix' is set, is the
 INITIAL value stored in this equation's `.eld' sidecar (see
-`latex-to-svg-metadata'); the FINAL value is captured from the compile
+`latex-to-svg-backend-metadata'); the FINAL value is captured from the compile
 log.  It is only recorded when a compile actually runs (a miss).
 
 RESCALE-BY (default 1.0) multiplies the base display size for this one
-call, on top of the global `latex-to-svg-font-scale'.  The engine has no
+call, on top of the global `latex-to-svg-backend-font-scale'.  The engine has no
 inline/display awareness; a front-end that wants display equations a
 touch larger than inline passes, say, `:rescale-by 1.1' for display and
 nothing for inline.  It is a display-time scale only — same on-disk SVG,
@@ -846,48 +846,48 @@ delimiters also choose inline vs display sizing — the engine does not.
 
 Returns immediately with:
 
-  * the placeholder panel image, when `latex-to-svg-use-placeholder'
+  * the placeholder panel image, when `latex-to-svg-backend-use-placeholder'
     is set or the toolchain is unavailable (see
-    `latex-to-svg--placeholder');
+    `latex-to-svg-backend--placeholder');
   * the cached / on-disk equation image when it is ready;
   * nil when equations aren't renderable (see
-    `latex-to-svg-available-p') — the caller keeps the raw text.
+    `latex-to-svg-backend-available-p') — the caller keeps the raw text.
 
 When the equation is renderable but not yet compiled, returns nil and
 schedules an asynchronous compile; CALLBACK (a zero-argument function)
 is invoked once, when the SVG is ready, so the caller can re-query
-\(call `latex-to-svg' again, which now returns the image) and place
+\(call `latex-to-svg-backend' again, which now returns the image) and place
 it.  Concurrent requests for the same equation share one compile.
 
 The image is tinted to the current buffer foreground and scaled to
 the buffer font at build time, so call within the target buffer."
-  (when (latex-to-svg-available-p)
+  (when (latex-to-svg-backend-available-p)
     (cond
-     ((or latex-to-svg-use-placeholder
-          (not (latex-to-svg-tools-available-p)))
-      (latex-to-svg--placeholder latex))
+     ((or latex-to-svg-backend-use-placeholder
+          (not (latex-to-svg-backend-tools-available-p)))
+      (latex-to-svg-backend--placeholder latex))
      (t
-      (let* ((key (latex-to-svg--cache-key latex))
-             (image (latex-to-svg--cached-image key rescale-by)))
+      (let* ((key (latex-to-svg-backend--cache-key latex))
+             (image (latex-to-svg-backend--cached-image key rescale-by)))
         (or image
             (progn
               (when callback
-                (latex-to-svg--enqueue key latex callback metadata))
+                (latex-to-svg-backend--enqueue key latex callback metadata))
               nil)))))))
 
 ;;;###autoload
-(defun latex-to-svg-invalidate (latex)
+(defun latex-to-svg-backend-invalidate (latex)
   "Forget any cached render of LATEX and force a recompile next time.
 
 Deletes LATEX's on-disk SVG (content-addressed) and drops every
 in-memory image built from it (all sizes / colors), so a subsequent
-`latex-to-svg' for LATEX recompiles from scratch.  Use this to recover
+`latex-to-svg-backend' for LATEX recompiles from scratch.  Use this to recover
 from a stale or corrupt cached SVG — ordinarily the content hash makes
 that impossible, so this is an escape hatch, not part of the normal
 flow."
-  (let* ((key (latex-to-svg--cache-key latex))
-         (file (latex-to-svg--svg-file key))
-         (meta (latex-to-svg--meta-file key))
+  (let* ((key (latex-to-svg-backend--cache-key latex))
+         (file (latex-to-svg-backend--svg-file key))
+         (meta (latex-to-svg-backend--meta-file key))
          (prefix (concat key "@"))
          (stale nil))
     (when (file-exists-p file)
@@ -898,12 +898,12 @@ flow."
     (maphash (lambda (k _v)
                (when (string-prefix-p prefix k)
                  (push k stale)))
-             latex-to-svg--image-cache)
+             latex-to-svg-backend--image-cache)
     (dolist (k stale)
-      (remhash k latex-to-svg--image-cache))))
+      (remhash k latex-to-svg-backend--image-cache))))
 
 ;;;###autoload
-(defun latex-to-svg-flush-format ()
+(defun latex-to-svg-backend-flush-format ()
   "Delete all precompiled preamble format files and forget them.
 
 Removes every `.fmt' in the cache directory and clears this session's
@@ -913,29 +913,29 @@ the automatic freshness check missed — normally a TeX toolchain upgrade
 is handled on its own (the binary is newer than the `.fmt'), so this is
 rarely needed."
   (interactive)
-  (clrhash latex-to-svg--format-checked)
-  (clrhash latex-to-svg--format-blocklist)
-  (let ((dir (latex-to-svg--cache-dir)))
+  (clrhash latex-to-svg-backend--format-checked)
+  (clrhash latex-to-svg-backend--format-blocklist)
+  (let ((dir (latex-to-svg-backend--cache-dir)))
     (dolist (f (directory-files dir t "\\.fmt\\'"))
       (ignore-errors (delete-file f)))))
 
 ;;;###autoload
-(defun latex-to-svg-metadata (latex)
+(defun latex-to-svg-backend-metadata (latex)
   "Return cached compile metadata for LATEX, or nil.
 
 Returns the plist `(:v 1 :nums (INITIAL . FINAL))' read from LATEX's
 `.eld' sidecar: INITIAL is the caller's `:metadata' at render time and
 FINAL is the first integer the compile emitted on a
-`latex-to-svg-metadata-prefix' line.  Available on cache hit or miss once
+`latex-to-svg-backend-metadata-prefix' line.  Available on cache hit or miss once
 LATEX has compiled at least once with the prefix set; nil otherwise (a
 corrupt or half-written sidecar also yields nil)."
-  (let ((file (latex-to-svg--meta-file (latex-to-svg--cache-key latex))))
+  (let ((file (latex-to-svg-backend--meta-file (latex-to-svg-backend--cache-key latex))))
     (when (file-readable-p file)
       (ignore-errors
         (with-temp-buffer
           (insert-file-contents file)
           (read (current-buffer)))))))
 
-(provide 'latex-to-svg)
+(provide 'latex-to-svg-backend)
 
-;;; latex-to-svg.el ends here
+;;; latex-to-svg-backend.el ends here
