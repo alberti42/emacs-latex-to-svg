@@ -5,7 +5,7 @@
 ;; Author: Andrea Alberti <a.alberti82@gmail.com>
 ;; Maintainer: Andrea Alberti <a.alberti82@gmail.com>
 ;; URL: https://github.com/alberti42/latex-to-svg-backend
-;; Version: 0.4.0
+;; Version: 0.5.0
 ;; Package-Requires: ((emacs "29.1"))
 ;; Keywords: tex, math, images
 
@@ -55,6 +55,13 @@
 ;;     re-parsing the class and packages (amsmath, ...) on each equation, so
 ;;     compiles are markedly faster.  It falls back to a full compile when
 ;;     `mylatexformat' is unavailable or the dump fails.
+;;
+;;   * The cache is SHARDED into 256 subdirectories (by the first two hex
+;;     characters of the content key) so no single directory accumulates
+;;     every equation, and is bounded by an age-limited garbage collector
+;;     (`latex-to-svg-backend-gc') that deletes equations untouched for a
+;;     while and runs automatically about once a day (see
+;;     `latex-to-svg-backend-gc-interval').
 ;;
 ;; Public entry point:
 ;;
@@ -159,6 +166,26 @@ sessions and each unique equation compiles at most once ever.  Because the
 cache is content-addressed and color/size-independent, it is safe to share
 across every front-end and buffer."
   :type '(choice (const :tag "Default XDG cache" nil) directory)
+  :group 'latex-to-svg-backend)
+
+(defcustom latex-to-svg-backend-cache-max-age 90
+  "Delete cached equation SVGs untouched for this many days, or nil for no cap.
+The garbage collector (`latex-to-svg-backend-gc') treats each SVG's
+modification time as its last-use time (bumped on every load), so this
+expires equations that have not been viewed within the given window.
+Because the cache is content-addressed and color/size-independent, an
+expired equation simply recompiles the next time it is needed."
+  :type '(choice (const :tag "No age limit" nil) (integer :tag "Days"))
+  :group 'latex-to-svg-backend)
+
+(defcustom latex-to-svg-backend-gc-interval 1
+  "Minimum days between automatic cache collections, or nil to disable them.
+An idle timer checks this cadence against an on-disk timestamp, so
+`latex-to-svg-backend-gc' runs at most once per interval no matter how many
+sessions share the cache (and still collects a long-lived daemon daily).
+Set to nil to turn off automatic GC entirely; `latex-to-svg-backend-gc'
+can always be invoked by hand."
+  :type '(choice (const :tag "Disabled" nil) (number :tag "Days"))
   :group 'latex-to-svg-backend)
 
 (defcustom latex-to-svg-backend-metadata-prefix nil
@@ -359,15 +386,34 @@ display time), so neither size nor color is part of this key."
                              latex-to-svg-backend-preamble
                              latex-to-svg-backend-appended-preamble)))
 
+(defun latex-to-svg-backend--key-dir (key)
+  "Return the shard subdirectory holding KEY's cache files, creating it.
+Cached files are sharded into 256 buckets by the first two characters of
+the (hex) content KEY, so no single directory accumulates every equation
+\(cf. Git's object store or org-persist's cache).  All of KEY's files —
+`.svg', `.eld', `.log' — live together in its bucket."
+  (let ((dir (expand-file-name (substring key 0 2)
+                               (latex-to-svg-backend--cache-dir))))
+    (unless (file-directory-p dir)
+      (make-directory dir t))
+    dir))
+
 (defun latex-to-svg-backend--svg-file (key)
-  "Return the cache SVG path for KEY."
+  "Return the cache SVG path for KEY (inside its shard subdirectory)."
   (expand-file-name (concat key ".svg")
-                    (latex-to-svg-backend--cache-dir)))
+                    (latex-to-svg-backend--key-dir key)))
 
 (defun latex-to-svg-backend--meta-file (key)
   "Return the compile-metadata sidecar path for KEY (a `.eld' next to the SVG)."
   (expand-file-name (concat key ".eld")
-                    (latex-to-svg-backend--cache-dir)))
+                    (latex-to-svg-backend--key-dir key)))
+
+(defun latex-to-svg-backend--touch (file)
+  "Bump FILE's modification time to now, best-effort (a last-use hint for GC).
+`latex-to-svg-backend-gc' treats the SVG mtime as the equation's last-use
+time, so this is called whenever a cached SVG is (re)loaded.  Any error is
+ignored: the mtime is only a hint."
+  (ignore-errors (set-file-times file)))
 
 ;;;; Scale
 
@@ -467,6 +513,8 @@ text scale."
     (or (gethash image-key latex-to-svg-backend--image-cache)
         (let ((file (latex-to-svg-backend--svg-file key)))
           (when (file-exists-p file)
+            ;; Record the access for the LRU garbage collector.
+            (latex-to-svg-backend--touch file)
             (puthash image-key
                      (latex-to-svg-backend--load-svg-image file scale color)
                      latex-to-svg-backend--image-cache))))))
@@ -654,7 +702,7 @@ copied to a persistent file in the cache directory, and a warning is
 emitted with a clickable link to it."
   (let* ((log-src (expand-file-name "equation.log" dir))
          (log-dst (expand-file-name (concat key ".log")
-                                    (latex-to-svg-backend--cache-dir)))
+                                    (latex-to-svg-backend--key-dir key)))
          (snippet (truncate-string-to-width latex 60 nil nil t)))
     (when (file-exists-p log-src)
       (copy-file log-src log-dst t))
@@ -935,6 +983,110 @@ corrupt or half-written sidecar also yields nil)."
         (with-temp-buffer
           (insert-file-contents file)
           (read (current-buffer)))))))
+
+;;;; Cache maintenance (garbage collection)
+
+(defun latex-to-svg-backend--delete-entry (svg)
+  "Delete cache SVG and its `.eld'/`.log' siblings.  Return the bytes freed."
+  (let ((base (file-name-sans-extension svg))
+        (freed 0))
+    (dolist (ext '(".svg" ".eld" ".log"))
+      (let ((f (concat base ext)))
+        (when (file-exists-p f)
+          (cl-incf freed (or (file-attribute-size (file-attributes f)) 0))
+          (ignore-errors (delete-file f)))))
+    freed))
+
+(defun latex-to-svg-backend--gc-stamp-file ()
+  "Return the path of the file recording the last GC time."
+  (expand-file-name "gc-timestamp" (latex-to-svg-backend--cache-dir)))
+
+(defun latex-to-svg-backend--last-gc-time ()
+  "Return the `float-time' of the last recorded GC, or 0 if never / unreadable."
+  (let ((f (latex-to-svg-backend--gc-stamp-file)))
+    (or (and (file-readable-p f)
+             (ignore-errors
+               (with-temp-buffer
+                 (insert-file-contents f)
+                 (read (current-buffer)))))
+        0)))
+
+(defun latex-to-svg-backend--record-gc-time ()
+  "Persist the current time as the last GC time (for the daily cadence)."
+  (ignore-errors
+    (with-temp-file (latex-to-svg-backend--gc-stamp-file)
+      (prin1 (float-time) (current-buffer)))))
+
+;;;###autoload
+(defun latex-to-svg-backend-gc ()
+  "Prune the on-disk equation cache of entries untouched for too long.
+
+Deletes every cached SVG (with its `.eld' / `.log' siblings) whose
+modification time is older than `latex-to-svg-backend-cache-max-age' days.
+The SVG mtime is a last-use hint, bumped whenever an equation is (re)loaded
+\(see `latex-to-svg-backend--touch'), so equations you keep viewing are kept;
+a pruned one simply recompiles the next time it is needed.
+
+Runs automatically about once a day (see `latex-to-svg-backend-gc-interval');
+this command forces a run now.  Returns a cons (DELETED . BYTES-FREED)."
+  (interactive)
+  (let* ((dir (latex-to-svg-backend--cache-dir))
+         (svgs (and (file-directory-p dir)
+                    (directory-files-recursively dir "\\.svg\\'")))
+         (now (float-time))
+         (max-age (and latex-to-svg-backend-cache-max-age
+                       (* latex-to-svg-backend-cache-max-age 86400)))
+         (deleted 0) (freed 0))
+    (when max-age
+      (dolist (f svgs)
+        (let ((mtime (float-time (file-attribute-modification-time
+                                  (file-attributes f)))))
+          (when (> (- now mtime) max-age)
+            (cl-incf freed (latex-to-svg-backend--delete-entry f))
+            (cl-incf deleted)))))
+    (latex-to-svg-backend--record-gc-time)
+    (when (called-interactively-p 'interactive)
+      (message "latex-to-svg-backend: GC removed %d equation(s), freed %s"
+               deleted (file-size-human-readable freed)))
+    (cons deleted freed)))
+
+;;;###autoload
+(defun latex-to-svg-backend-clear-cache ()
+  "Delete every cached equation SVG and its `.eld'/`.log' siblings.
+
+Empties the on-disk equation cache (all shards) and the in-memory image
+cache; precompiled `.fmt' format files are kept (see
+`latex-to-svg-backend-flush-format').  Every equation simply recompiles on
+next use — a blunt companion to `latex-to-svg-backend-gc' and
+`latex-to-svg-backend-invalidate'."
+  (interactive)
+  (let ((dir (latex-to-svg-backend--cache-dir)))
+    (when (file-directory-p dir)
+      (dolist (f (directory-files-recursively dir "\\.\\(svg\\|eld\\|log\\)\\'"))
+        (ignore-errors (delete-file f)))))
+  (clrhash latex-to-svg-backend--image-cache))
+
+(defvar latex-to-svg-backend--gc-timer nil
+  "Idle timer that periodically triggers `latex-to-svg-backend--maybe-gc', or nil.")
+
+(defun latex-to-svg-backend--maybe-gc ()
+  "Run `latex-to-svg-backend-gc' unless a GC ran within the interval.
+Idle-timer entry point.  Honours `latex-to-svg-backend-gc-interval' (nil
+disables automatic GC) and enforces the cadence via the on-disk timestamp,
+so the cache is collected at most once per interval across every session
+that shares it — including a daemon left running for days."
+  (when (and latex-to-svg-backend-gc-interval
+             (> (- (float-time) (latex-to-svg-backend--last-gc-time))
+                (* latex-to-svg-backend-gc-interval 86400)))
+    (latex-to-svg-backend-gc)))
+
+;; Install the periodic GC.  The short idle period only decides how soon
+;; after going idle the cadence check runs; the real frequency is bounded by
+;; `latex-to-svg-backend-gc-interval' via the on-disk timestamp.  Skipped in
+;; batch (tests drive `latex-to-svg-backend-gc' directly).
+(unless (or noninteractive latex-to-svg-backend--gc-timer)
+  (setq latex-to-svg-backend--gc-timer
+        (run-with-idle-timer 300 t #'latex-to-svg-backend--maybe-gc)))
 
 (provide 'latex-to-svg-backend)
 

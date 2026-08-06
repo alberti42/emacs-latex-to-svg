@@ -598,6 +598,118 @@ kept for symmetry with the compile pipeline."
                      (latex-to-svg-backend--format-file (latex-to-svg-backend--format-key))))))
       (delete-directory latex-to-svg-backend-cache-directory t))))
 
+;;;; Cache sharding
+
+(ert-deftest latex-to-svg-backend-svg-file-is-sharded-by-key-prefix ()
+  ;; The SVG (and its `.eld' sidecar) live in a subdirectory named by the
+  ;; first two characters of the content key, created on demand.
+  (let ((latex-to-svg-backend-cache-directory (make-temp-file "l2s-shard" t)))
+    (unwind-protect
+        (let* ((key (latex-to-svg-backend--cache-key "$x$"))
+               (svg (latex-to-svg-backend--svg-file key))
+               (eld (latex-to-svg-backend--meta-file key))
+               (bucket (substring key 0 2)))
+          (should (equal (file-name-nondirectory
+                          (directory-file-name (file-name-directory svg)))
+                         bucket))
+          ;; SVG and sidecar share the same bucket, which now exists.
+          (should (equal (file-name-directory svg) (file-name-directory eld)))
+          (should (file-directory-p (file-name-directory svg)))
+          (should (equal (file-name-nondirectory svg) (concat key ".svg"))))
+      (delete-directory latex-to-svg-backend-cache-directory t))))
+
+(ert-deftest latex-to-svg-backend-invalidate-works-with-sharding ()
+  ;; `invalidate' removes the sharded SVG and its sidecar.
+  (let ((latex-to-svg-backend-cache-directory (make-temp-file "l2s-shard-inv" t))
+        (latex-to-svg-backend--image-cache (make-hash-table :test 'equal)))
+    (unwind-protect
+        (let* ((key (latex-to-svg-backend--cache-key "$y$"))
+               (svg (latex-to-svg-backend--svg-file key))
+               (eld (latex-to-svg-backend--meta-file key)))
+          (with-temp-file svg (insert "<svg/>"))
+          (with-temp-file eld (prin1 '(:v 1 :nums (1 . 1)) (current-buffer)))
+          (latex-to-svg-backend-invalidate "$y$")
+          (should-not (file-exists-p svg))
+          (should-not (file-exists-p eld)))
+      (delete-directory latex-to-svg-backend-cache-directory t))))
+
+;;;; Cache garbage collection
+
+(defun latex-to-svg-backend-tests--fake-entry (latex bytes age-days)
+  "Write a fake cache SVG of BYTES for LATEX, dated AGE-DAYS in the past.
+Return the SVG path."
+  (let ((svg (latex-to-svg-backend--svg-file (latex-to-svg-backend--cache-key latex)))
+        (ts (- (float-time) (* age-days 86400))))
+    (with-temp-file svg (insert (make-string bytes ?x)))
+    (set-file-times svg (seconds-to-time ts))
+    svg))
+
+(ert-deftest latex-to-svg-backend-gc-expires-by-age ()
+  ;; Entries older than the age cap are deleted (with siblings); fresh ones stay.
+  (let ((latex-to-svg-backend-cache-directory (make-temp-file "l2s-gc-age" t))
+        (latex-to-svg-backend-cache-max-age 30))
+    (unwind-protect
+        (let ((old (latex-to-svg-backend-tests--fake-entry "$old$" 10 90))
+              (new (latex-to-svg-backend-tests--fake-entry "$new$" 10 1))
+              ;; A sidecar next to the stale SVG must go with it.
+              (old-eld (latex-to-svg-backend--meta-file
+                        (latex-to-svg-backend--cache-key "$old$"))))
+          (with-temp-file old-eld (prin1 '(:v 1 :nums (1 . 1)) (current-buffer)))
+          (let ((res (latex-to-svg-backend-gc)))
+            (should (= 1 (car res))))
+          (should-not (file-exists-p old))
+          (should-not (file-exists-p old-eld))
+          (should (file-exists-p new)))
+      (delete-directory latex-to-svg-backend-cache-directory t))))
+
+(ert-deftest latex-to-svg-backend-gc-records-timestamp-and-gates-cadence ()
+  ;; `--maybe-gc' runs when the interval has elapsed and no-ops when it hasn't.
+  (let ((latex-to-svg-backend-cache-directory (make-temp-file "l2s-gc-stamp" t))
+        (latex-to-svg-backend-cache-max-age nil)
+        (latex-to-svg-backend-gc-interval 1))
+    (unwind-protect
+        (progn
+          (should (= 0 (latex-to-svg-backend--last-gc-time)))
+          ;; First check runs a GC and records the time.
+          (let ((ran nil))
+            (cl-letf (((symbol-function 'latex-to-svg-backend-gc)
+                       (lambda () (setq ran t)
+                         (latex-to-svg-backend--record-gc-time) '(0 . 0))))
+              (latex-to-svg-backend--maybe-gc)
+              (should ran)
+              (should (> (latex-to-svg-backend--last-gc-time) 0))
+              ;; Second check within the interval is a no-op.
+              (setq ran nil)
+              (latex-to-svg-backend--maybe-gc)
+              (should-not ran)))
+          ;; A nil interval disables automatic GC entirely.
+          (let ((latex-to-svg-backend-gc-interval nil) (ran nil))
+            (cl-letf (((symbol-function 'latex-to-svg-backend-gc)
+                       (lambda () (setq ran t) '(0 . 0))))
+              (latex-to-svg-backend--maybe-gc)
+              (should-not ran))))
+      (delete-directory latex-to-svg-backend-cache-directory t))))
+
+(ert-deftest latex-to-svg-backend-clear-cache-empties-svgs-keeps-fmt ()
+  ;; `clear-cache' deletes svg/eld across shards and empties the image cache,
+  ;; but leaves `.fmt' format files alone.
+  (let ((latex-to-svg-backend-cache-directory (make-temp-file "l2s-clear" t))
+        (latex-to-svg-backend--image-cache (make-hash-table :test 'equal)))
+    (unwind-protect
+        (let ((svg (latex-to-svg-backend-tests--fake-entry "$z$" 10 1))
+              (eld (latex-to-svg-backend--meta-file
+                    (latex-to-svg-backend--cache-key "$z$")))
+              (fmt (latex-to-svg-backend--format-file "deadbeef")))
+          (with-temp-file eld (prin1 '(:v 1 :nums (1 . 1)) (current-buffer)))
+          (with-temp-file fmt (insert "format"))
+          (puthash "k@1.0@#000000" 'img latex-to-svg-backend--image-cache)
+          (latex-to-svg-backend-clear-cache)
+          (should-not (file-exists-p svg))
+          (should-not (file-exists-p eld))
+          (should (file-exists-p fmt))
+          (should (= 0 (hash-table-count latex-to-svg-backend--image-cache))))
+      (delete-directory latex-to-svg-backend-cache-directory t))))
+
 (provide 'latex-to-svg-backend-tests)
 
 ;;; latex-to-svg-backend-tests.el ends here
