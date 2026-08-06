@@ -151,13 +151,31 @@ For an equation you *don't* want to track, do nothing extra: call `(latex-to-svg
 | `latex-to-svg-backend-dvisvgm-program` | `"dvisvgm"` | the `dvisvgm` binary |
 | `latex-to-svg-backend-preamble` | `standalone[varwidth]` + `amsmath`/`xcolor` | the document class and base packages |
 | `latex-to-svg-backend-appended-preamble` | `""` | extra preamble lines (your macros, packages) appended to the base |
-| `latex-to-svg-backend-cache-directory` | `$XDG_CACHE_HOME/latex-to-svg-backend/` | where `<hash>.svg` / `.eld` / `.fmt` live |
+| `latex-to-svg-backend-cache-directory` | `$XDG_CACHE_HOME/latex-to-svg-backend/` | where `<hash>.svg` / `.eld` / `.fmt` live (SVGs sharded into 256 buckets — see below) |
+| `latex-to-svg-backend-cache-max-age` | `90` | GC deletes equations untouched for this many days (`nil` = no age limit) |
+| `latex-to-svg-backend-gc-interval` | `1` | minimum days between automatic GC runs (`nil` = no automatic GC) |
 | `latex-to-svg-backend-font-scale` | `1.0` | equation size relative to the buffer font (1.0 = match) |
 | `latex-to-svg-backend-use-placeholder` | `nil` | force the raw-LaTeX placeholder instead of compiling |
 | `latex-to-svg-backend-render-on-non-graphic` | `nil` | allow rendering on a non-graphical frame |
 | `latex-to-svg-backend-svg-dpi` | `96.0` | points→pixels constant for sizing; rarely needs changing |
 | `latex-to-svg-backend-metadata-prefix` | `nil` | `nil` = off; the `\typeout` prefix enabling `.eld` compile-metadata capture (above) |
 | `latex-to-svg-backend-precompile` | `t` | preamble precompilation to a `.fmt` (below) |
+
+### Cache location & garbage collection
+
+Every unique equation compiles to a color- and size-independent SVG named by the SHA-1 of its LaTeX + preamble + style, cached under `latex-to-svg-backend-cache-directory` (default `$XDG_CACHE_HOME/latex-to-svg-backend/`, or `~/.cache/…`). The cache **persists across sessions** and is **shared across every front-end and buffer** — an equation that appears in an Org buffer and an agent's chat compiles once. Because the SVG is color- and size-independent, a theme switch or font/zoom change is a cache *hit*, never a recompile, so the cache doesn't churn the way a color-baked one does.
+
+SVGs are **sharded** into 256 subdirectories named by the first two hex characters of the content hash (`…/latex-to-svg-backend/ab/abcd….svg`, with the `.eld` sidecar and any `.log` alongside), so no single directory accumulates every equation. `.fmt` format files stay at the top level.
+
+Stale entries are pruned by an **age-based garbage collector**. Each SVG's modification time is a last-use hint, bumped whenever the equation is (re)loaded, so `latex-to-svg-backend-gc` deletes only equations untouched for `latex-to-svg-backend-cache-max-age` days (default 90); a pruned one simply recompiles when next needed. GC runs automatically at most once per `latex-to-svg-backend-gc-interval` day (default 1), coordinated through an on-disk timestamp and an idle timer — so several sessions sharing the cache don't each run it, and a daemon left running for days still collects daily. Set `-gc-interval` to `nil` to disable automatic GC (you can still call it by hand), or `-cache-max-age` to `nil` to keep entries forever.
+
+Three interactive commands manage the cache directly:
+
+| Command | Effect |
+| --- | --- |
+| `latex-to-svg-backend-gc` | run the age-based prune now (returns `(DELETED . BYTES-FREED)`) |
+| `latex-to-svg-backend-clear-cache` | delete **all** cached equation SVGs (with their `.eld`/`.log` siblings) and the in-memory image cache; keeps `.fmt` files |
+| `latex-to-svg-backend-invalidate` | forget one equation's cached render (its SVG, `.eld`, and in-memory images) so it recompiles — an escape hatch for a stale/corrupt entry |
 
 ### Preamble precompilation (`.fmt`)
 
