@@ -160,8 +160,8 @@ and rebuilt automatically (the binary is newer than the `.fmt');
 
 (defcustom latex-to-svg-backend-cache-directory nil
   "Directory for cached equation SVGs and scratch compiles.
-When nil, `$XDG_CACHE_HOME/latex-to-svg-backend/' (or
-`~/.cache/latex-to-svg-backend/') is used, so equation SVGs persist across
+When nil, `$XDG_CACHE_HOME/emacs/latex-to-svg/' (or
+`~/.cache/emacs/latex-to-svg/') is used, so equation SVGs persist across
 sessions and each unique equation compiles at most once ever.  Because the
 cache is content-addressed and color/size-independent, it is safe to share
 across every front-end and buffer."
@@ -352,14 +352,23 @@ frame but shows once a graphical frame views the buffer)."
 ;;;; Cache addressing
 
 (defun latex-to-svg-backend--cache-dir ()
-  "Return the equation cache directory, creating it if needed.
+  "Return the root cache directory, creating it if needed.
 Honours `latex-to-svg-backend-cache-directory', else `$XDG_CACHE_HOME'
-\(or `~/.cache') under `latex-to-svg-backend/'."
+\(or `~/.cache') under `emacs/latex-to-svg/'.  Files are organised into
+`svg/' (sharded equation SVGs + sidecars) and `fmt/' (precompiled
+preambles) subdirectories, plus the `gc-timestamp' housekeeping file."
   (let ((dir (or latex-to-svg-backend-cache-directory
                  (expand-file-name
-                  "latex-to-svg-backend/"
+                  "emacs/latex-to-svg/"
                   (or (getenv "XDG_CACHE_HOME")
                       (expand-file-name "~/.cache"))))))
+    (unless (file-directory-p dir)
+      (make-directory dir t))
+    dir))
+
+(defun latex-to-svg-backend--subdir (name)
+  "Return subdirectory NAME under the cache directory, creating it."
+  (let ((dir (expand-file-name name (latex-to-svg-backend--cache-dir))))
     (unless (file-directory-p dir)
       (make-directory dir t))
     dir))
@@ -386,27 +395,24 @@ display time), so neither size nor color is part of this key."
                              latex-to-svg-backend-preamble
                              latex-to-svg-backend-appended-preamble)))
 
-(defun latex-to-svg-backend--key-dir (key)
+(defun latex-to-svg-backend--shard-dir (key)
   "Return the shard subdirectory holding KEY's cache files, creating it.
-Cached files are sharded into 256 buckets by the first two characters of
-the (hex) content KEY, so no single directory accumulates every equation
-\(cf. Git's object store or org-persist's cache).  All of KEY's files —
-`.svg', `.eld', `.log' — live together in its bucket."
-  (let ((dir (expand-file-name (substring key 0 2)
-                               (latex-to-svg-backend--cache-dir))))
-    (unless (file-directory-p dir)
-      (make-directory dir t))
-    dir))
+SVGs live under the `svg/' subdirectory, sharded into 256 buckets by the
+first two characters of the (hex) content KEY, so no single directory
+accumulates every equation (cf. Git's object store or org-persist's
+cache).  All of KEY's files — `.svg', `.eld', `.log' — live together in
+`svg/<XX>/'."
+  (latex-to-svg-backend--subdir (concat "svg/" (substring key 0 2))))
 
 (defun latex-to-svg-backend--svg-file (key)
   "Return the cache SVG path for KEY (inside its shard subdirectory)."
   (expand-file-name (concat key ".svg")
-                    (latex-to-svg-backend--key-dir key)))
+                    (latex-to-svg-backend--shard-dir key)))
 
 (defun latex-to-svg-backend--meta-file (key)
   "Return the compile-metadata sidecar path for KEY (a `.eld' next to the SVG)."
   (expand-file-name (concat key ".eld")
-                    (latex-to-svg-backend--key-dir key)))
+                    (latex-to-svg-backend--shard-dir key)))
 
 (defun latex-to-svg-backend--touch (file)
   "Bump FILE's modification time to now, best-effort (a last-use hint for GC).
@@ -603,9 +609,13 @@ either yields a distinct `.fmt' (and a rebuild on the next render)."
                              (latex-to-svg-backend--preamble)
                              latex-to-svg-backend-latex-program)))
 
+(defun latex-to-svg-backend--fmt-dir ()
+  "Return the subdirectory holding precompiled `.fmt' files, creating it."
+  (latex-to-svg-backend--subdir "fmt"))
+
 (defun latex-to-svg-backend--format-file (fkey)
   "Return the precompiled format file path (`.fmt') for FKEY."
-  (expand-file-name (concat fkey ".fmt") (latex-to-svg-backend--cache-dir)))
+  (expand-file-name (concat fkey ".fmt") (latex-to-svg-backend--fmt-dir)))
 
 (defun latex-to-svg-backend--precompile-available-p ()
   "Return non-nil when the preamble can be dumped to a `.fmt'.
@@ -618,11 +628,11 @@ findable via `kpsewhich'."
 (defun latex-to-svg-backend--build-format (fkey)
   "Dump the preamble to a precompiled format file for FKEY, synchronously.
 Return the `.fmt' path on success, nil on failure.  Writes the preamble
-followed by `\\endofdump' to a scratch `.tex' in the cache directory and runs
-`latex-to-svg-backend-latex-program' in `-ini' mode with `mylatexformat.ltx'
-to dump `<cache>/FKEY.fmt'.  The build log is left in the
+followed by `\\endofdump' to a scratch `.tex' in the `fmt/' subdirectory
+and runs `latex-to-svg-backend-latex-program' in `-ini' mode with
+`mylatexformat.ltx' to dump `<cache>/fmt/FKEY.fmt'.  The build log is in the
 `*latex-to-svg-backend-precompile*' buffer for inspection."
-  (let* ((dir (latex-to-svg-backend--cache-dir))
+  (let* ((dir (latex-to-svg-backend--fmt-dir))
          (base (expand-file-name fkey dir))
          (fmt (concat base ".fmt"))
          (pre-tex (concat base ".tex"))
@@ -702,7 +712,7 @@ copied to a persistent file in the cache directory, and a warning is
 emitted with a clickable link to it."
   (let* ((log-src (expand-file-name "equation.log" dir))
          (log-dst (expand-file-name (concat key ".log")
-                                    (latex-to-svg-backend--key-dir key)))
+                                    (latex-to-svg-backend--shard-dir key)))
          (snippet (truncate-string-to-width latex 60 nil nil t)))
     (when (file-exists-p log-src)
       (copy-file log-src log-dst t))
@@ -954,7 +964,7 @@ flow."
 (defun latex-to-svg-backend-flush-format ()
   "Delete all precompiled preamble format files and forget them.
 
-Removes every `.fmt' in the cache directory and clears this session's
+Removes every `.fmt' in the cache `fmt/' subdirectory and clears this session's
 freshness and blocklist tracking, so the next render dumps a fresh
 format from the current preamble.  An escape hatch for a stale format
 the automatic freshness check missed — normally a TeX toolchain upgrade
@@ -963,9 +973,10 @@ rarely needed."
   (interactive)
   (clrhash latex-to-svg-backend--format-checked)
   (clrhash latex-to-svg-backend--format-blocklist)
-  (let ((dir (latex-to-svg-backend--cache-dir)))
-    (dolist (f (directory-files dir t "\\.fmt\\'"))
-      (ignore-errors (delete-file f)))))
+  (let ((dir (expand-file-name "fmt" (latex-to-svg-backend--cache-dir))))
+    (when (file-directory-p dir)
+      (dolist (f (directory-files dir t "\\.fmt\\'"))
+        (ignore-errors (delete-file f))))))
 
 ;;;###autoload
 (defun latex-to-svg-backend-metadata (latex)
@@ -1030,9 +1041,9 @@ a pruned one simply recompiles the next time it is needed.
 Runs automatically about once a day (see `latex-to-svg-backend-gc-interval');
 this command forces a run now.  Returns a cons (DELETED . BYTES-FREED)."
   (interactive)
-  (let* ((dir (latex-to-svg-backend--cache-dir))
-         (svgs (and (file-directory-p dir)
-                    (directory-files-recursively dir "\\.svg\\'")))
+  (let* ((svg-dir (expand-file-name "svg" (latex-to-svg-backend--cache-dir)))
+         (svgs (and (file-directory-p svg-dir)
+                    (directory-files-recursively svg-dir "\\.svg\\'")))
          (now (float-time))
          (max-age (and latex-to-svg-backend-cache-max-age
                        (* latex-to-svg-backend-cache-max-age 86400)))
@@ -1060,10 +1071,9 @@ cache; precompiled `.fmt' format files are kept (see
 next use — a blunt companion to `latex-to-svg-backend-gc' and
 `latex-to-svg-backend-invalidate'."
   (interactive)
-  (let ((dir (latex-to-svg-backend--cache-dir)))
-    (when (file-directory-p dir)
-      (dolist (f (directory-files-recursively dir "\\.\\(svg\\|eld\\|log\\)\\'"))
-        (ignore-errors (delete-file f)))))
+  (let ((svg-dir (expand-file-name "svg" (latex-to-svg-backend--cache-dir))))
+    (when (file-directory-p svg-dir)
+      (ignore-errors (delete-directory svg-dir t))))
   (clrhash latex-to-svg-backend--image-cache))
 
 (defvar latex-to-svg-backend--gc-timer nil

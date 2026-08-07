@@ -61,8 +61,8 @@
 ;;;; Cache directory
 
 (ert-deftest latex-to-svg-backend-cache-dir-uses-xdg-default ()
-  ;; With no explicit override, the cache lives under $XDG_CACHE_HOME in a
-  ;; `latex-to-svg-backend/' subdirectory, and is created on demand.
+  ;; With no explicit override, the cache lives under $XDG_CACHE_HOME in an
+  ;; `emacs/latex-to-svg/' subdirectory, and is created on demand.
   (let* ((parent (make-temp-file "l2s-xdg" t))
          (latex-to-svg-backend-cache-directory nil)
          (process-environment (cons (concat "XDG_CACHE_HOME=" parent)
@@ -71,7 +71,7 @@
         (let ((dir (latex-to-svg-backend--cache-dir)))
           (should (equal (file-name-as-directory dir)
                          (file-name-as-directory
-                          (expand-file-name "latex-to-svg-backend" parent))))
+                          (expand-file-name "emacs/latex-to-svg" parent))))
           (should (file-directory-p dir)))
       (delete-directory parent t))))
 
@@ -559,16 +559,18 @@ kept for symmetry with the compile pipeline."
         (latex-to-svg-backend--format-checked (make-hash-table :test 'equal))
         (latex-to-svg-backend--format-blocklist (make-hash-table :test 'equal)))
     (unwind-protect
-        (let ((dir latex-to-svg-backend-cache-directory))
-          (with-temp-file (expand-file-name "aaa.fmt" dir) (insert "1"))
-          (with-temp-file (expand-file-name "bbb.fmt" dir) (insert "2"))
-          ;; A sibling SVG must survive the flush.
-          (with-temp-file (expand-file-name "ccc.svg" dir) (insert "<svg/>"))
+        (let ((fmt-dir (latex-to-svg-backend--fmt-dir))
+              (svg (latex-to-svg-backend--svg-file
+                    (latex-to-svg-backend--cache-key "$keep$"))))
+          (with-temp-file (expand-file-name "aaa.fmt" fmt-dir) (insert "1"))
+          (with-temp-file (expand-file-name "bbb.fmt" fmt-dir) (insert "2"))
+          ;; A cached SVG (in the `svg/' subtree) must survive the flush.
+          (with-temp-file svg (insert "<svg/>"))
           (puthash "aaa" t latex-to-svg-backend--format-checked)
           (puthash "bbb" t latex-to-svg-backend--format-blocklist)
           (latex-to-svg-backend-flush-format)
-          (should-not (directory-files dir nil "\\.fmt\\'"))
-          (should (file-exists-p (expand-file-name "ccc.svg" dir)))
+          (should-not (directory-files fmt-dir nil "\\.fmt\\'"))
+          (should (file-exists-p svg))
           (should (= 0 (hash-table-count latex-to-svg-backend--format-checked)))
           (should (= 0 (hash-table-count latex-to-svg-backend--format-blocklist))))
       (delete-directory latex-to-svg-backend-cache-directory t))))
