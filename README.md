@@ -9,6 +9,7 @@ Equations are compiled once and then recolored and rescaled **without recompilin
 - **Content-addressed on disk.** Each unique equation (SHA-1 of LaTeX + preamble + style) compiles at most once, ever; the cache is shared across every front-end and buffer.
 - **Color-independent SVG.** `dvisvgm --currentcolor` emits the default ink as the literal token `currentColor`, substituted with the buffer foreground at display time. A theme switch re-tints from cache — no recompile. The image background is transparent, so it always matches the buffer.
 - **Size-independent SVG.** Compiled at `dvisvgm --scale=1` (natural point dimensions, glyphs as outline paths) and scaled at display time via `create-image`'s `:scale`, computed from the buffer font height so equations track the font — again no recompile.
+- **In-memory image cache.** On top of the on-disk SVG cache, each ready-to-display image (the SVG already tinted and scaled for the current buffer) is memoized for the session, keyed by content + color + scale. Re-showing an equation you've already displayed — revisiting a buffer, scrolling back, a redisplay — is then an instant hash lookup, with no disk read and no recompile. Sizes and colors coexist as separate entries, so a font or theme change just adds one.
 
 ## Related packages
 
@@ -164,6 +165,8 @@ For an equation you *don't* want to track, do nothing extra: call `(latex-to-svg
 ### Cache location & garbage collection
 
 Every unique equation compiles to a color- and size-independent SVG named by the SHA-1 of its LaTeX + preamble + style, cached under `latex-to-svg-backend-cache-directory` (default `$XDG_CACHE_HOME/emacs/latex-to-svg/`, or `~/.cache/emacs/latex-to-svg/`). The cache **persists across sessions** and is **shared across every front-end and buffer** — an equation that appears in an Org buffer and an agent's chat compiles once. Because the SVG is color- and size-independent, a theme switch or font/zoom change is a cache *hit*, never a recompile, so the cache doesn't churn the way a color-baked one does.
+
+Lookup is two-tier: a request is served first from the **in-memory image cache** (a ready-to-display image, keyed by content + color + scale — see [Why](#why)), then from the **on-disk SVG**, and only a miss on both triggers a compile that writes a new SVG. So re-displaying equations within a session never touches disk, and the on-disk tree only grows when a genuinely new (or evicted) equation is rendered.
 
 The cache root is organised into two subdirectories (plus a `gc-timestamp` housekeeping file):
 
