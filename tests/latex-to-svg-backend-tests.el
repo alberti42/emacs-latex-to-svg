@@ -272,6 +272,322 @@
       (should (= 2 (length (gethash (latex-to-svg-backend--cache-key "E=mc^2")
                                     latex-to-svg-backend--pending)))))))
 
+;;;; Direct process pipeline
+
+(defun latex-to-svg-backend-tests--finish-fake-process
+    (process exit-status &optional output status event)
+  "Finish fake PROCESS with EXIT-STATUS, optionally appending OUTPUT.
+STATUS defaults to `exit', and EVENT defaults to a status-appropriate
+completion event."
+  (when output
+    (with-current-buffer (plist-get (aref process 3) :buffer)
+      (goto-char (point-max))
+      (insert output)))
+  (let ((status (or status 'exit)))
+    (aset process 1 status)
+    (aset process 2 exit-status)
+    (funcall
+     (plist-get (aref process 3) :sentinel)
+     process
+     (or event
+         (cond
+          ((eq status 'signal)
+           (format "killed by signal %d\n" exit-status))
+          ((zerop exit-status) "finished\n")
+          (t (format "exited abnormally with code %d\n" exit-status)))))))
+
+(defmacro latex-to-svg-backend-tests--with-fake-processes (&rest body)
+  "Run BODY with direct asynchronous processes captured as fake processes."
+  (declare (indent 0) (debug t))
+  `(let* ((l2s-test-cache-dir (make-temp-file "l2s-process-cache" t))
+          (latex-to-svg-backend-cache-directory l2s-test-cache-dir)
+          (latex-to-svg-backend-precompile nil)
+          (latex-to-svg-backend-latex-program "latex-direct")
+          (latex-to-svg-backend-dvisvgm-program "dvisvgm-direct")
+          (latex-to-svg-backend--pending (make-hash-table :test 'equal))
+          (latex-to-svg-backend--format-checked (make-hash-table :test 'equal))
+          (latex-to-svg-backend--format-blocklist (make-hash-table :test 'equal))
+          (l2s-test-processes nil)
+          (l2s-test-warnings nil))
+     (unwind-protect
+         (cl-letf
+             (((symbol-function 'make-process)
+               (lambda (&rest plist)
+                 (unless (buffer-live-p (plist-get plist :buffer))
+                   (error "Process output buffer is not live"))
+                 (let ((process
+                        (vector 'fake-process 'run 0 plist default-directory)))
+                   (push process l2s-test-processes)
+                   process)))
+              ((symbol-function 'process-status)
+               (lambda (process) (aref process 1)))
+              ((symbol-function 'process-exit-status)
+               (lambda (process) (aref process 2)))
+              ((symbol-function 'display-warning)
+               (lambda (&rest warning)
+                 (push warning l2s-test-warnings)))
+              ((symbol-function 'start-process-shell-command)
+               (lambda (&rest _)
+                 (error "A shell pipeline must not be used"))))
+           ,@body)
+       (dolist (process l2s-test-processes)
+         (let ((buffer (plist-get (aref process 3) :buffer))
+               (dir (aref process 4)))
+           (when (buffer-live-p buffer)
+             (kill-buffer buffer))
+           (when (and (file-directory-p dir)
+                      (string-prefix-p
+                       "latex-to-svg-backend"
+                       (file-name-nondirectory (directory-file-name dir))))
+             (delete-directory dir t))))
+       (when (file-directory-p l2s-test-cache-dir)
+         (delete-directory l2s-test-cache-dir t)))))
+
+(ert-deftest latex-to-svg-backend-compile-direct-argv-ignores-user-shell ()
+  ;; A Nu or invalid user shell is irrelevant: latex is started directly,
+  ;; followed by dvisvgm only after the expected DVI appears.
+  (latex-to-svg-backend-tests--with-fake-processes
+    (let* ((shell-file-name "nu")
+           (latex-to-svg-backend-metadata-prefix "L2S")
+           (doc "$x^2$")
+           (key (latex-to-svg-backend--cache-key doc))
+           (callbacks 0)
+           metadata-seen)
+      (puthash
+       key
+       (list (lambda () (error "callback marker"))
+             (lambda ()
+               (cl-incf callbacks)
+               (setq metadata-seen (latex-to-svg-backend-metadata doc))))
+       latex-to-svg-backend--pending)
+      (latex-to-svg-backend--compile key doc 3)
+      (should (= (length l2s-test-processes) 1))
+      (let* ((latex-process (car l2s-test-processes))
+             (latex-plist (aref latex-process 3))
+             (latex-command (plist-get latex-plist :command))
+             (scratch (aref latex-process 4))
+             (output-buffer (plist-get latex-plist :buffer))
+             (dvi (expand-file-name "equation.dvi" scratch))
+             (tex-log (expand-file-name "equation.log" scratch))
+             (svg (latex-to-svg-backend--svg-file key)))
+        (should (equal latex-command
+                       (list "latex-direct"
+                             "-interaction=nonstopmode"
+                             "-halt-on-error"
+                             (expand-file-name "equation.tex" scratch))))
+        (should (equal (plist-get latex-plist :connection-type) 'pipe))
+        (should (plist-get latex-plist :noquery))
+        (should (equal scratch (file-name-as-directory scratch)))
+        (with-temp-file dvi
+          (insert "fake dvi"))
+        (with-temp-file tex-log
+          (insert "L2S 3\n"))
+        (latex-to-svg-backend-tests--finish-fake-process latex-process 0)
+        (should (= (length l2s-test-processes) 2))
+        (let* ((dvisvgm-process (car l2s-test-processes))
+               (dvisvgm-plist (aref dvisvgm-process 3)))
+          (should (equal (aref dvisvgm-process 4) scratch))
+          (should
+           (equal (plist-get dvisvgm-plist :command)
+                  (list "dvisvgm-direct"
+                        "--no-fonts" "--exact-bbox" "--currentcolor"
+                        "--scale=1" "-o" svg dvi)))
+          (with-temp-file svg
+            (insert "<svg/>"))
+          (latex-to-svg-backend-tests--finish-fake-process
+           dvisvgm-process 0))
+        (should (= callbacks 1))
+        (should (equal metadata-seen '(:v 1 :nums (3 . 3))))
+        (should-not (gethash key latex-to-svg-backend--pending))
+        (should-not (file-directory-p scratch))
+        (should-not (buffer-live-p output-buffer))))))
+
+(ert-deftest latex-to-svg-backend-latex-failure-saves-process-output ()
+  ;; If latex fails before producing equation.log, captured stderr and the
+  ;; terminal status are persisted; dvisvgm is not started.
+  (latex-to-svg-backend-tests--with-fake-processes
+    (let* ((doc "$bad$")
+           (key (latex-to-svg-backend--cache-key doc)))
+      (puthash key (list #'ignore) latex-to-svg-backend--pending)
+      (latex-to-svg-backend--compile key doc)
+      (let* ((latex-process (car l2s-test-processes))
+             (output-buffer (plist-get (aref latex-process 3) :buffer))
+             (scratch (aref latex-process 4))
+             (log (expand-file-name (concat key ".log")
+                                    (latex-to-svg-backend--key-dir key))))
+        (latex-to-svg-backend-tests--finish-fake-process
+         latex-process 1 "latex stderr marker\n")
+        (should (= (length l2s-test-processes) 1))
+        (should-not (gethash key latex-to-svg-backend--pending))
+        (should-not (file-directory-p scratch))
+        (should-not (buffer-live-p output-buffer))
+        (should (file-exists-p log))
+        (with-temp-buffer
+          (insert-file-contents log)
+          (should (search-forward "latex stderr marker" nil t))
+          (should (search-forward
+                   "[latex] status=exit exit-status=1" nil t))
+          (should (search-forward
+                   "event=\"exited abnormally with code 1\\n\"" nil t)))
+        (should l2s-test-warnings)))))
+
+(ert-deftest latex-to-svg-backend-missing-stage-output-is-logged ()
+  ;; A zero exit without the promised DVI fails with an explicit diagnostic.
+  (latex-to-svg-backend-tests--with-fake-processes
+    (let* ((doc "$no-dvi$")
+           (key (latex-to-svg-backend--cache-key doc)))
+      (puthash key (list #'ignore) latex-to-svg-backend--pending)
+      (latex-to-svg-backend--compile key doc)
+      (let* ((latex-process (car l2s-test-processes))
+             (scratch (aref latex-process 4))
+             (dvi (expand-file-name "equation.dvi" scratch))
+             (log (expand-file-name (concat key ".log")
+                                    (latex-to-svg-backend--key-dir key))))
+        (should-not (file-exists-p dvi))
+        (latex-to-svg-backend-tests--finish-fake-process latex-process 0)
+        (should (= (length l2s-test-processes) 1))
+        (should-not (gethash key latex-to-svg-backend--pending))
+        (should-not (file-directory-p scratch))
+        (with-temp-buffer
+          (insert-file-contents log)
+          (should (search-forward
+                   "[latex] status=exit exit-status=0" nil t))
+          (should (search-forward "[latex] expected output missing:" nil t))
+          (should (search-forward "equation.dvi" nil t)))
+        (should l2s-test-warnings)))))
+
+(ert-deftest latex-to-svg-backend-dead-process-log-still-cleans-up ()
+  ;; Logging is best-effort: a dead output buffer that makes the next stage
+  ;; fail to start must not suppress completion or leak pending/scratch state.
+  (latex-to-svg-backend-tests--with-fake-processes
+    (let* ((doc "$x$")
+           (key (latex-to-svg-backend--cache-key doc)))
+      (puthash key (list #'ignore) latex-to-svg-backend--pending)
+      (latex-to-svg-backend--compile key doc)
+      (let* ((latex-process (car l2s-test-processes))
+             (output-buffer (plist-get (aref latex-process 3) :buffer))
+             (scratch (aref latex-process 4))
+             (dvi (expand-file-name "equation.dvi" scratch)))
+        (with-temp-file dvi
+          (insert "fake dvi"))
+        (kill-buffer output-buffer)
+        (latex-to-svg-backend-tests--finish-fake-process latex-process 0)
+        (should (= (length l2s-test-processes) 1))
+        (should-not (gethash key latex-to-svg-backend--pending))
+        (should-not (file-directory-p scratch))
+        (should l2s-test-warnings)))))
+
+(ert-deftest latex-to-svg-backend-dvisvgm-signal-keeps-both-logs ()
+  ;; A second-stage signal keeps equation.log, process output, and signal data.
+  (latex-to-svg-backend-tests--with-fake-processes
+    (let* ((doc "$bad-svg$")
+           (key (latex-to-svg-backend--cache-key doc)))
+      (puthash key (list #'ignore) latex-to-svg-backend--pending)
+      (latex-to-svg-backend--compile key doc)
+      (let* ((latex-process (car l2s-test-processes))
+             (scratch (aref latex-process 4))
+             (dvi (expand-file-name "equation.dvi" scratch))
+             (tex-log (expand-file-name "equation.log" scratch))
+             (log (expand-file-name (concat key ".log")
+                                    (latex-to-svg-backend--key-dir key))))
+        (with-temp-file dvi
+          (insert "fake dvi"))
+        (with-temp-file tex-log
+          (insert "equation.log marker\n"))
+        (latex-to-svg-backend-tests--finish-fake-process latex-process 0)
+        (should (= (length l2s-test-processes) 2))
+        (latex-to-svg-backend-tests--finish-fake-process
+         (car l2s-test-processes) 9 "dvisvgm stderr marker\n"
+         'signal "killed by signal 9\n")
+        (should-not (gethash key latex-to-svg-backend--pending))
+        (should-not (file-directory-p scratch))
+        (with-temp-buffer
+          (insert-file-contents log)
+          (should (search-forward "equation.log marker" nil t))
+          (should (search-forward "dvisvgm stderr marker" nil t))
+          (should (search-forward
+                   "[dvisvgm] status=signal exit-status=9" nil t))
+          (should (search-forward
+                   "event=\"killed by signal 9\\n\"" nil t)))
+        (should l2s-test-warnings)))))
+
+(ert-deftest latex-to-svg-backend-format-failure-retries-directly ()
+  ;; A failed .fmt attempt is cleaned up and retried once with the full
+  ;; preamble while keeping callbacks and metadata queued across attempts.
+  (latex-to-svg-backend-tests--with-fake-processes
+    (let* ((latex-to-svg-backend-precompile t)
+           (latex-to-svg-backend-metadata-prefix "L2S")
+           (doc "$retry$")
+           (key (latex-to-svg-backend--cache-key doc))
+           (fmt (latex-to-svg-backend--format-file "fake-format"))
+           (ensure-calls 0)
+           (callbacks 0)
+           metadata-seen)
+      (with-temp-file fmt
+        (insert "fake format"))
+      (puthash
+       key
+       (list (lambda ()
+               (cl-incf callbacks)
+               (setq metadata-seen (latex-to-svg-backend-metadata doc))))
+       latex-to-svg-backend--pending)
+      (cl-letf (((symbol-function 'latex-to-svg-backend--ensure-format)
+                 (lambda ()
+                   (cl-incf ensure-calls)
+                   fmt)))
+        (latex-to-svg-backend--compile key doc 7)
+        (let* ((first-process (car l2s-test-processes))
+               (first-plist (aref first-process 3))
+               (first-buffer (plist-get first-plist :buffer))
+               (first-scratch (aref first-process 4))
+               (first-tex (car (last (plist-get first-plist :command))))
+               (first-source
+                (with-temp-buffer
+                  (insert-file-contents first-tex)
+                  (buffer-string))))
+          (should (string-prefix-p "%& " first-source))
+          (latex-to-svg-backend-tests--finish-fake-process
+           first-process 1 "format compile failed\n")
+          (should (= ensure-calls 1))
+          (should (= (length l2s-test-processes) 2))
+          (should-not (file-exists-p fmt))
+          (should (gethash "fake-format"
+                           latex-to-svg-backend--format-blocklist))
+          (should (gethash key latex-to-svg-backend--pending))
+          (should (= callbacks 0))
+          (should-not (file-directory-p first-scratch))
+          (should-not (buffer-live-p first-buffer))
+          (let* ((retry-process (car l2s-test-processes))
+                 (retry-plist (aref retry-process 3))
+                 (retry-buffer (plist-get retry-plist :buffer))
+                 (retry-scratch (aref retry-process 4))
+                 (retry-tex (car (last (plist-get retry-plist :command))))
+                 (retry-source
+                  (with-temp-buffer
+                    (insert-file-contents retry-tex)
+                    (buffer-string)))
+                 (dvi (expand-file-name "equation.dvi" retry-scratch))
+                 (tex-log (expand-file-name "equation.log" retry-scratch))
+                 (svg (latex-to-svg-backend--svg-file key)))
+            (should-not (string-prefix-p "%& " retry-source))
+            (should (string-prefix-p
+                     (latex-to-svg-backend--preamble) retry-source))
+            (with-temp-file dvi
+              (insert "fake dvi"))
+            (with-temp-file tex-log
+              (insert "L2S 7\n"))
+            (latex-to-svg-backend-tests--finish-fake-process retry-process 0)
+            (should (= (length l2s-test-processes) 3))
+            (with-temp-file svg
+              (insert "<svg/>"))
+            (latex-to-svg-backend-tests--finish-fake-process
+             (car l2s-test-processes) 0)
+            (should (= callbacks 1))
+            (should (equal metadata-seen '(:v 1 :nums (7 . 7))))
+            (should-not (gethash key latex-to-svg-backend--pending))
+            (should-not (file-directory-p retry-scratch))
+            (should-not (buffer-live-p retry-buffer))))))))
+
 ;;;; End-to-end (requires latex + dvisvgm; skipped otherwise)
 
 (ert-deftest latex-to-svg-backend-compiles-verbatim-display-math ()
