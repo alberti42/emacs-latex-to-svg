@@ -152,6 +152,7 @@ For an equation you *don't* want to track, do nothing extra: call `(latex-to-svg
 | `latex-to-svg-backend-dvisvgm-program` | `"dvisvgm"` | the `dvisvgm` binary |
 | `latex-to-svg-backend-preamble` | `standalone[varwidth]` + `amsmath`/`xcolor` | the document class and base packages |
 | `latex-to-svg-backend-appended-preamble` | `""` | extra preamble lines (your macros, packages) appended to the base |
+| `latex-to-svg-backend-line-width` | `nil` | max equation width (LaTeX dim); raise it (e.g. `"20cm"`) so wide numbered equations keep their number on one line — see below |
 | `latex-to-svg-backend-cache-directory` | `$XDG_CACHE_HOME/emacs/latex-to-svg/` | cache root; holds `svg/` (sharded SVGs + sidecars) and `fmt/` (`.fmt` files) — see below |
 | `latex-to-svg-backend-cache-max-age` | `90` | GC deletes equations untouched for this many days (`nil` = no age limit) |
 | `latex-to-svg-backend-gc-interval` | `1` | minimum days between automatic GC runs (`nil` = no automatic GC) |
@@ -161,6 +162,12 @@ For an equation you *don't* want to track, do nothing extra: call `(latex-to-svg
 | `latex-to-svg-backend-svg-dpi` | `96.0` | points→pixels constant for sizing; rarely needs changing |
 | `latex-to-svg-backend-metadata-prefix` | `nil` | `nil` = off; the `\typeout` prefix enabling `.eld` compile-metadata capture (above) |
 | `latex-to-svg-backend-precompile` | `t` | preamble precompilation to a `.fmt` (below) |
+
+### Controlling the width of numbered equations (`latex-to-svg-backend-line-width`)
+
+You normally never touch this, and it only concerns *numbered* equations. A numbered display puts its number flush right at the equation's max width (the `varwidth` box, default `\linewidth` ≈ 345pt) — the usual right-margin placement you see in any document. The one case where the default bites is an equation *wider* than that margin: TeX then drops the number onto a second line. If you have such equations, set `latex-to-svg-backend-line-width` to a LaTeX dimension wide enough for your widest one (e.g. `"20cm"`) and the number stays on the line. All this does is move the right margin — out for wide equations, or *in* (a smaller value, e.g. `"6cm"`) to tuck the number closer when every equation is short.
+
+Nothing is ever clipped: math cannot line-break, so an equation wider than the box just overflows it and is cropped to its full ink either way. Setting the width too small therefore doesn't truncate anything — its only effect is to wrap the number onto a second line (the very thing you'd be avoiding), so keep it at or above your widest numbered equation. Unnumbered content ignores this setting entirely. The value folds into the cache key, so changing it re-renders.
 
 ### Cache location & garbage collection
 

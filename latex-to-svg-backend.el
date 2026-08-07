@@ -5,7 +5,7 @@
 ;; Author: Andrea Alberti <a.alberti82@gmail.com>
 ;; Maintainer: Andrea Alberti <a.alberti82@gmail.com>
 ;; URL: https://github.com/alberti42/latex-to-svg-backend
-;; Version: 0.5.0
+;; Version: 0.6.0
 ;; Package-Requires: ((emacs "29.1"))
 ;; Keywords: tex, math, images
 
@@ -136,6 +136,26 @@ Use this to load additional packages (e.g. `\\usepackage{braket}',
 value is folded into the cache key, so changing it automatically
 invalidates cached SVGs."
   :type 'string
+  :group 'latex-to-svg-backend)
+
+(defcustom latex-to-svg-backend-line-width nil
+  "Maximum typeset width of an equation, as a LaTeX dimension string.
+This caps the width of the `varwidth' box the body is set in (the
+`standalone' class's `\\sa@width').  When nil (the default) the class's
+default is used (`\\linewidth', ~345pt).
+
+A *numbered* display sets its number flush right at this width, and TeX
+drops it onto a second line when the equation is wider, so the number
+stays on the line only while the equation fits within it.  Raise it
+(e.g. \"20cm\") when wide numbered equations wrap their number; lower it
+(e.g. \"6cm\") to tuck the number closer to the equation when every
+equation is short.  Either way this just moves the right margin; the
+one rule is not to set it below your widest numbered equation (which
+would wrap).  Unnumbered content is unaffected (cropped to its ink).
+
+The value is folded into the cache key, so changing it re-renders."
+  :type '(choice (const :tag "Class default (~345pt)" nil)
+                 (string :tag "LaTeX dimension"))
   :group 'latex-to-svg-backend)
 
 (defcustom latex-to-svg-backend-precompile t
@@ -376,10 +396,18 @@ preambles) subdirectories, plus the `gc-timestamp' housekeeping file."
 (defun latex-to-svg-backend--preamble ()
   "Return the full LaTeX preamble: the base plus any appended packages.
 This is the exact text embedded before `\\begin{document}' in a full
-compile, and the text dumped into the precompiled format file."
-  (if (string-empty-p latex-to-svg-backend-appended-preamble)
-      latex-to-svg-backend-preamble
-    (concat latex-to-svg-backend-preamble "\n" latex-to-svg-backend-appended-preamble)))
+compile, and the text dumped into the precompiled format file.  When
+`latex-to-svg-backend-line-width' is set, a `\\sa@width' override is
+appended so the `varwidth' box uses that width (see that variable)."
+  (concat
+   latex-to-svg-backend-preamble
+   (unless (string-empty-p latex-to-svg-backend-appended-preamble)
+     (concat "\n" latex-to-svg-backend-appended-preamble))
+   ;; Override `standalone's varwidth width (`\sa@width', default
+   ;; `\linewidth').  Placed last so it wins over the class default.
+   (when latex-to-svg-backend-line-width
+     (format "\n\\makeatletter\\def\\sa@width{%s}\\makeatother"
+             latex-to-svg-backend-line-width))))
 
 (defun latex-to-svg-backend--cache-key (latex)
   "Return a stable content cache key for LATEX.
@@ -390,10 +418,9 @@ equation numbering — changes the key on its own.  The key names the
 on-disk SVG, which is both font- AND color-independent (equations
 are compiled with dvisvgm `--currentcolor', then sized and tinted at
 display time), so neither size nor color is part of this key."
-  (secure-hash 'sha1 (format "%s\0%s%s"
+  (secure-hash 'sha1 (format "%s\0%s"
                              latex
-                             latex-to-svg-backend-preamble
-                             latex-to-svg-backend-appended-preamble)))
+                             (latex-to-svg-backend--preamble))))
 
 (defun latex-to-svg-backend--shard-dir (key)
   "Return the shard subdirectory holding KEY's cache files, creating it.

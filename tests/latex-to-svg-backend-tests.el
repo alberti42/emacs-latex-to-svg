@@ -45,6 +45,13 @@
     (let ((latex-to-svg-backend-appended-preamble "\\usepackage{braket}"))
       (should-not (equal base (latex-to-svg-backend--cache-key "E=mc^2"))))))
 
+(ert-deftest latex-to-svg-backend-cache-key-folds-in-line-width ()
+  ;; Changing the equation max width must invalidate the cache: it changes
+  ;; the preamble (a `\sa@width' override), hence the render.
+  (let ((base (latex-to-svg-backend--cache-key "E=mc^2")))
+    (let ((latex-to-svg-backend-line-width "20cm"))
+      (should-not (equal base (latex-to-svg-backend--cache-key "E=mc^2"))))))
+
 (ert-deftest latex-to-svg-backend-cache-key-distinguishes-delimiters ()
   ;; The engine renders LATEX verbatim, so inline vs display (different
   ;; delimiters) are simply different strings and get distinct keys with no
@@ -463,6 +470,19 @@ kept for symmetry with the compile pipeline."
   (let ((latex-to-svg-backend-preamble "BASE")
         (latex-to-svg-backend-appended-preamble "EXTRA"))
     (should (equal (latex-to-svg-backend--preamble) "BASE\nEXTRA"))))
+
+(ert-deftest latex-to-svg-backend-preamble-appends-line-width ()
+  ;; A non-nil `latex-to-svg-backend-line-width' appends a `\sa@width'
+  ;; override (last, so it wins over the class default); nil appends nothing.
+  (let ((latex-to-svg-backend-preamble "BASE")
+        (latex-to-svg-backend-appended-preamble "")
+        (latex-to-svg-backend-line-width nil))
+    (should (equal (latex-to-svg-backend--preamble) "BASE")))
+  (let ((latex-to-svg-backend-preamble "BASE")
+        (latex-to-svg-backend-appended-preamble "EXTRA")
+        (latex-to-svg-backend-line-width "18cm"))
+    (should (equal (latex-to-svg-backend--preamble)
+                   "BASE\nEXTRA\n\\makeatletter\\def\\sa@width{18cm}\\makeatother"))))
 
 (ert-deftest latex-to-svg-backend-ensure-format-nil-when-disabled ()
   ;; With precompilation off, no format is produced or consulted (never even
